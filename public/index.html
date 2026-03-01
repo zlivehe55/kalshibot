@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>KALSHIBOT - Mission Control</title>
+  <link rel="stylesheet" href="styles.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+</head>
+<body>
+  <!-- Header -->
+  <header class="header">
+    <div class="header-left">
+      <div class="logo">
+        <span class="logo-icon">&#9670;</span>
+        <span class="logo-text">KALSHIBOT</span>
+      </div>
+      <span class="header-subtitle">MISSION CONTROL</span>
+    </div>
+    <div class="header-right">
+      <div class="connection-dots">
+        <span class="dot" id="dot-binance" title="Binance"></span>
+        <span class="dot-label">BIN</span>
+        <span class="dot" id="dot-polymarket" title="Polymarket"></span>
+        <span class="dot-label">POLY</span>
+        <span class="dot" id="dot-kalshi" title="Kalshi"></span>
+        <span class="dot-label">KAL</span>
+        <span class="dot" id="dot-redstone" title="RedStone"></span>
+        <span class="dot-label">RED</span>
+      </div>
+      <div class="uptime" id="uptime">00:00:00</div>
+    </div>
+  </header>
+
+  <!-- Main Grid -->
+  <main class="grid">
+
+    <!-- Row 1: Key Metrics -->
+    <section class="panel metric-panel" id="panel-btc">
+      <div class="metric-label">BTC/USD</div>
+      <div class="metric-value" id="btc-price">--</div>
+      <div class="metric-sub" id="btc-source">Waiting...</div>
+    </section>
+
+    <section class="panel metric-panel" id="panel-pnl">
+      <div class="metric-label">TOTAL P&L</div>
+      <div class="metric-value" id="total-pnl">$0.00</div>
+      <div class="metric-sub" id="win-loss">0W / 0L</div>
+    </section>
+
+    <section class="panel metric-panel" id="panel-roi">
+      <div class="metric-label">ROI</div>
+      <div class="metric-value" id="roi-value">0.0%</div>
+      <div class="metric-sub" id="trades-per-hour">0 trades/hr</div>
+    </section>
+
+    <section class="panel metric-panel" id="panel-balance">
+      <div class="metric-label">BALANCE</div>
+      <div class="metric-value" id="balance-value">$0.00</div>
+      <div class="metric-sub" id="balance-available">$0.00 available</div>
+    </section>
+
+    <!-- Row 2: Bot Intent + Model -->
+    <section class="panel wide-panel" id="panel-intent">
+      <div class="panel-header">
+        <span class="panel-title">BOT INTENT</span>
+        <span class="status-badge" id="bot-status">INITIALIZING</span>
+      </div>
+      <div class="intent-body">
+        <div class="intent-message" id="intent-message">Starting up...</div>
+        <div class="intent-details">
+          <div class="intent-detail">
+            <span class="detail-label">ACTION</span>
+            <span class="detail-value" id="intent-action">--</span>
+          </div>
+          <div class="intent-detail">
+            <span class="detail-label">MODEL P(UP)</span>
+            <span class="detail-value" id="intent-prob">--</span>
+          </div>
+          <div class="intent-detail">
+            <span class="detail-label">EDGE</span>
+            <span class="detail-value" id="intent-edge">--</span>
+          </div>
+          <div class="intent-detail">
+            <span class="detail-label">SPOT MOVE</span>
+            <span class="detail-value" id="intent-move">--</span>
+          </div>
+          <div class="intent-detail">
+            <span class="detail-label">VOLATILITY</span>
+            <span class="detail-value" id="intent-vol">--</span>
+          </div>
+          <div class="intent-detail">
+            <span class="detail-label">TIME LEFT</span>
+            <span class="detail-value" id="intent-time">--</span>
+          </div>
+          <div class="intent-detail">
+            <span class="detail-label">1H TREND</span>
+            <span class="detail-value" id="intent-trend">--</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Row 3: P&L Chart + Open Positions -->
+    <section class="panel chart-panel">
+      <div class="panel-header">
+        <span class="panel-title">P&L CHART</span>
+        <span class="panel-badge" id="chart-total">$0.00</span>
+      </div>
+      <div class="chart-container">
+        <canvas id="pnl-chart"></canvas>
+      </div>
+    </section>
+
+    <section class="panel positions-panel">
+      <div class="panel-header">
+        <span class="panel-title">OPEN POSITIONS</span>
+        <span class="panel-badge" id="pos-count">0</span>
+      </div>
+      <div class="positions-list" id="positions-list">
+        <div class="empty-state">No open positions</div>
+      </div>
+    </section>
+
+    <!-- Row 4: Active Markets -->
+    <section class="panel full-panel">
+      <div class="panel-header">
+        <span class="panel-title">ACTIVE MARKETS</span>
+        <span class="panel-badge" id="market-count">0</span>
+      </div>
+      <div class="markets-table-wrap">
+        <table class="markets-table" id="markets-table">
+          <thead>
+            <tr>
+              <th>TICKER</th>
+              <th>YES BID/ASK</th>
+              <th>NO BID/ASK</th>
+              <th>COMBINED</th>
+              <th>TIME LEFT</th>
+              <th>STATUS</th>
+            </tr>
+          </thead>
+          <tbody id="markets-body"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Row 5: Trade Log + Stats -->
+    <section class="panel log-panel">
+      <div class="panel-header">
+        <span class="panel-title">TRADE LOG</span>
+        <span class="panel-badge" id="log-count">0</span>
+      </div>
+      <div class="trade-log" id="trade-log">
+        <div class="empty-state">No trades yet</div>
+      </div>
+    </section>
+
+    <section class="panel stats-panel">
+      <div class="panel-header">
+        <span class="panel-title">STATISTICS</span>
+      </div>
+      <div class="stats-grid">
+        <div class="stat">
+          <span class="stat-label">Total Trades</span>
+          <span class="stat-value" id="stat-trades">0</span>
+        </div>
+        <div class="stat">
+          <span class="stat-label">Win Rate</span>
+          <span class="stat-value" id="stat-winrate">0%</span>
+        </div>
+        <div class="stat">
+          <span class="stat-label">Avg Edge</span>
+          <span class="stat-value" id="stat-avgedge">0%</span>
+        </div>
+        <div class="stat">
+          <span class="stat-label">Best Trade</span>
+          <span class="stat-value positive" id="stat-best">$0.00</span>
+        </div>
+        <div class="stat">
+          <span class="stat-label">Worst Trade</span>
+          <span class="stat-value negative" id="stat-worst">$0.00</span>
+        </div>
+        <div class="stat">
+          <span class="stat-label">Volume</span>
+          <span class="stat-value" id="stat-volume">$0.00</span>
+        </div>
+        <div class="stat">
+          <span class="stat-label">Trades/Hour</span>
+          <span class="stat-value" id="stat-tph">0</span>
+        </div>
+        <div class="stat">
+          <span class="stat-label">Open Positions</span>
+          <span class="stat-value" id="stat-open">0</span>
+        </div>
+        <div class="stat">
+          <span class="stat-label">Profit Factor</span>
+          <span class="stat-value" id="stat-profitfactor">--</span>
+        </div>
+        <div class="stat">
+          <span class="stat-label">Avg Win</span>
+          <span class="stat-value positive" id="stat-avgwin">$0.00</span>
+        </div>
+        <div class="stat">
+          <span class="stat-label">Avg Loss</span>
+          <span class="stat-value negative" id="stat-avgloss">$0.00</span>
+        </div>
+        <div class="stat">
+          <span class="stat-label">Streak</span>
+          <span class="stat-value" id="stat-streak">0</span>
+        </div>
+        <div class="stat">
+          <span class="stat-label">Unrealized P&L</span>
+          <span class="stat-value" id="stat-unrealized">$0.00</span>
+        </div>
+        <div class="stat">
+          <span class="stat-label">Strategy</span>
+          <span class="stat-value" id="stat-strategy" style="font-size:10px">--</span>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
