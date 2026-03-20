@@ -36,10 +36,12 @@ const config = {
 
   // Strategy thresholds
   MIN_EDGE: parseFloat(process.env.MIN_EDGE) || 10.0,
-  MIN_DIVERGENCE: parseFloat(process.env.MIN_DIVERGENCE) || 10.0,
+  // Backtest-optimized: higher threshold to filter overconfident signals
+  MIN_DIVERGENCE: parseFloat(process.env.MIN_DIVERGENCE) || 15.0,
   TRADING_WINDOW: parseInt(process.env.TRADING_WINDOW) || 4, // minutes
-  MIN_CONTRACT_PRICE: parseInt(process.env.MIN_CONTRACT_PRICE) || 48, // cents
-  MAX_CONTRACT_PRICE: parseInt(process.env.MAX_CONTRACT_PRICE) || 88, // cents
+  // Backtest-optimized: contracts above 65c have terrible payoff ratio
+  MIN_CONTRACT_PRICE: parseInt(process.env.MIN_CONTRACT_PRICE) || 35, // cents
+  MAX_CONTRACT_PRICE: parseInt(process.env.MAX_CONTRACT_PRICE) || 65, // cents
 
   // 1H Trend indicator
   TREND_ENABLED: process.env.TREND_ENABLED !== 'false',
@@ -51,9 +53,10 @@ const config = {
   TREND_PENALTY: parseFloat(process.env.TREND_PENALTY) || 0.40,
 
   // Position sizing
+  // Backtest-optimized: conservative Kelly to survive binary option variance
   USE_KELLY_SIZING: process.env.USE_KELLY_SIZING !== 'false',
-  KELLY_FRACTION: parseFloat(process.env.KELLY_FRACTION) || 0.25,
-  MAX_POSITION_SIZE: parseFloat(process.env.MAX_POSITION_SIZE) || 25,
+  KELLY_FRACTION: parseFloat(process.env.KELLY_FRACTION) || 0.08,
+  MAX_POSITION_SIZE: parseFloat(process.env.MAX_POSITION_SIZE) || 5,
   MAX_POSITIONS_PER_CONTRACT: parseInt(process.env.MAX_POSITIONS_PER_CONTRACT) || 1,
   MAX_TOTAL_OPEN_POSITIONS: parseInt(process.env.MAX_TOTAL_OPEN_POSITIONS) || 10,
 };
@@ -92,6 +95,17 @@ app.post('/api/save', (req, res) => {
     res.json({ status: 'saved' });
   } else {
     res.json({ error: 'Agent not started' });
+  }
+});
+
+// API: ML pipeline status
+app.get('/api/ml', (req, res) => {
+  const mlScorer = agent.registry.get('ml-signal-scorer');
+  if (mlScorer) {
+    const mlPipeline = require('./lib/ml-pipeline');
+    res.json(mlPipeline.describe());
+  } else {
+    res.json({ trained: false, note: 'ML scorer not initialized' });
   }
 });
 

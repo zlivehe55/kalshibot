@@ -12,11 +12,16 @@ class KalshiClient {
 
   loadPrivateKey() {
     if (!this.privateKeyPem) {
-      const keyPath = this.config.KALSHI_PRIVATE_KEY_PATH || './kalshi_private_key.pem';
-      if (!fs.existsSync(keyPath)) {
-        throw new Error(`Private key not found: ${keyPath}`);
+      // Support base64-encoded key from env var (for Vercel/serverless)
+      if (process.env.KALSHI_PRIVATE_KEY_BASE64) {
+        this.privateKeyPem = Buffer.from(process.env.KALSHI_PRIVATE_KEY_BASE64, 'base64').toString('utf8');
+      } else {
+        const keyPath = this.config.KALSHI_PRIVATE_KEY_PATH || './kalshi_private_key.pem';
+        if (!fs.existsSync(keyPath)) {
+          throw new Error(`Private key not found: ${keyPath}. Set KALSHI_PRIVATE_KEY_BASE64 env var for serverless deployments.`);
+        }
+        this.privateKeyPem = fs.readFileSync(keyPath, 'utf8');
       }
-      this.privateKeyPem = fs.readFileSync(keyPath, 'utf8');
     }
     return this.privateKeyPem;
   }

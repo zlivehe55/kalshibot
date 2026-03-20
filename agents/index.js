@@ -14,7 +14,8 @@
  *                 ├── Analysis Skills
  *                 │     ├── probability-model
  *                 │     ├── trend-analysis
- *                 │     └── signal-generator
+ *                 │     ├── signal-generator
+ *                 │     └── ml-signal-scorer
  *                 ├── Trading Skills
  *                 │     ├── risk-manager
  *                 │     ├── order-executor

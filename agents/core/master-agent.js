@@ -26,6 +26,7 @@ const KalshiMarketData = require('../skills/market-data/kalshi-market-data');
 const ProbabilityModel = require('../skills/analysis/probability-model');
 const TrendAnalysis = require('../skills/analysis/trend-analysis');
 const SignalGenerator = require('../skills/analysis/signal-generator');
+const MLSignalScorer = require('../skills/analysis/ml-signal-scorer');
 
 // Trading Skills
 const RiskManager = require('../skills/trading/risk-manager');
@@ -79,6 +80,7 @@ class MasterAgent extends EventEmitter {
     this.registry.register(new TrendAnalysis());
     this.registry.register(new ProbabilityModel());
     this.registry.register(new SignalGenerator());
+    this.registry.register(new MLSignalScorer());
 
     // Trading (depends on analysis + market data)
     this.registry.register(new RiskManager());
@@ -110,6 +112,11 @@ class MasterAgent extends EventEmitter {
 
     o.route('generate-signals', 'signal-generator');
     o.route('generate-take-profit-signals', 'signal-generator');
+
+    o.route('score-signal', 'ml-signal-scorer');
+    o.route('score-signals', 'ml-signal-scorer');
+    o.route('train-model', 'ml-signal-scorer');
+    o.route('get-ml-status', 'ml-signal-scorer');
 
     o.route('check-risk', 'risk-manager');
     o.route('check-position-limits', 'risk-manager');
@@ -154,9 +161,18 @@ class MasterAgent extends EventEmitter {
           skill: 'signal-generator',
         },
         {
+          action: 'score-signals',
+          skill: 'ml-signal-scorer',
+          condition: (ctx) => ctx.signals && ctx.signals.length > 0,
+        },
+        {
           action: 'evaluate-signals',
           skill: 'risk-manager',
-          condition: (ctx) => ctx.signals && ctx.signals.length > 0,
+          condition: (ctx) => {
+            // Use ML-scored signals if available, otherwise fall back to raw signals
+            const sigs = ctx.scoredSignals || ctx.signals;
+            return sigs && sigs.length > 0;
+          },
         },
         {
           action: 'execute-signals',

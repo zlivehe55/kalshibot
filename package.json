@@ -6,7 +6,10 @@
   "scripts": {
     "start": "node server.js",
     "legacy": "node kalshi-bot.js",
-    "dev": "node server.js"
+    "dev": "node server.js",
+    "backtest": "node backtest/backtest.js",
+    "backtest:verbose": "node backtest/backtest.js --verbose",
+    "backtest:30d": "node backtest/backtest.js --days 30"
   },
   "keywords": [
     "kalshi",
@@ -22,11 +25,16 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
+    "@supabase/supabase-js": "^2.99.3",
     "axios": "^1.6.0",
     "better-sqlite3": "^12.6.2",
     "dotenv": "^16.3.1",
     "express": "^4.21.0",
     "socket.io": "^4.7.5",
     "ws": "^8.18.0"
+  },
+  "optionalDependencies": {
+    "@langchain/openai": "^0.3.0",
+    "langchain": "^0.3.0"
   }
 }
