@@ -140,7 +140,11 @@ class OrderExecutor extends BaseSkill {
         action: `BUY ${signal.side.toUpperCase()} ${signal.ticker} x${signal.contracts} @ ${signal.priceCents}c`,
       });
 
+      console.log(`[OrderExecutor] Executing: ${signal.type} ${signal.ticker} ${signal.side} x${signal.contracts} @ ${signal.priceCents}c | Edge: ${signal.edge.toFixed(1)}%`);
+
       const order = await kalshiSkill.getClient().placeOrder(orderData);
+
+      console.log(`[OrderExecutor] Order ${order.order_id}: ${order.status} | Filled: ${order.fill_count || 0}/${signal.contracts}`);
 
       // Log order
       analyticsSkill.logOrderDirect({

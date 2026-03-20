@@ -148,6 +148,10 @@ class PositionManager extends BaseSkill {
       contracts: filled, pnl, cost: costDollars, payout, result: market.result,
     });
 
+    console.log(
+      `[PositionManager] ${won ? 'WON' : 'LOST'}: ${position.ticker} ${position.side} x${filled} | Cost: $${costDollars.toFixed(2)} | Payout: $${payout.toFixed(2)} | P&L: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}`
+    );
+
     await kalshiSkill.getClient().fetchBalance();
 
     return { settled: true, won, pnl, payout };

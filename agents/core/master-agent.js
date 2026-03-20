@@ -142,7 +142,7 @@ class MasterAgent extends EventEmitter {
   _configureWorkflows() {
     const o = this.orchestrator;
 
-    // Main scan-and-trade workflow
+    // Main scan-and-trade workflow — each step's result merges into ctx for the next
     o.workflow('scan-and-trade', {
       steps: [
         {
@@ -218,9 +218,9 @@ class MasterAgent extends EventEmitter {
       const skill = this.registry.get(skillName);
       try {
         await skill.initialize(context);
-        this.log(`  ✓ ${skillName} initialized`);
+        this.log(`  initialized ${skillName}`);
       } catch (err) {
-        this.log(`  ✗ ${skillName} failed: ${err.message}`, 'ERROR');
+        this.log(`  ${skillName} failed: ${err.message}`, 'ERROR');
         throw err;
       }
     }
@@ -231,16 +231,16 @@ class MasterAgent extends EventEmitter {
       try {
         await skill.start();
       } catch (err) {
-        this.log(`  ✗ ${skillName} start failed: ${err.message}`, 'ERROR');
+        this.log(`  ${skillName} start failed: ${err.message}`, 'ERROR');
       }
     }
 
     this.log('All skills started');
 
-    // Run startup workflow
+    // Run startup workflow: fetch balance → reconcile positions → discover markets
     stateManager.botState.updateIntent({
       status: 'initializing',
-      message: 'Running startup workflow...',
+      message: 'Connecting to Kalshi...',
     });
 
     const startupResult = await this.orchestrator.dispatch({
@@ -254,6 +254,11 @@ class MasterAgent extends EventEmitter {
       throw new Error('Startup workflow failed');
     }
 
+    // Log startup results
+    const balance = stateManager.botState.balance;
+    this.log(`Kalshi connected. Balance: $${balance.total.toFixed(2)}`);
+    this.log(`Tracking ${stateManager.botState.activeMarkets.length} markets (${this.config.SERIES_TICKER})`);
+
     // Wait for Binance price feed
     stateManager.botState.updateIntent({
       status: 'waiting',
@@ -262,7 +267,11 @@ class MasterAgent extends EventEmitter {
 
     await this._waitForPrice();
 
-    // Start periodic loops
+    // Start the OrderManager (manages fill polling and stale order cancellation)
+    const orderExecutor = this.registry.get('order-executor');
+    this.log('Order manager started');
+
+    // Start periodic auto-trade loops
     this._scanInterval = setInterval(() => this._runScan(), 2000);
     this._takeProfitInterval = setInterval(() => this._runTakeProfit(), 3000);
     this._discoveryInterval = setInterval(() => this._runDiscovery(), 15000);
@@ -273,7 +282,7 @@ class MasterAgent extends EventEmitter {
       message: 'Scanning for opportunities...',
     });
 
-    this.log('MasterAgent running. All systems active.');
+    this.log('Engine running. All systems active.');
     return stateManager.botState;
   }
 
@@ -292,20 +301,74 @@ class MasterAgent extends EventEmitter {
     });
   }
 
-  // ===== Periodic Task Runners =====
+  // ===== Periodic Auto-Trade Runners =====
 
   _scanRunning = false;
 
+  /**
+   * Main auto-trade loop. Runs every 2 seconds:
+   *   refresh markets → generate signals → risk check → execute orders
+   */
   async _runScan() {
     if (this._scanRunning || !this.running) return;
     this._scanRunning = true;
 
+    const state = this.state;
+
     try {
-      await this.orchestrator.dispatch({
+      const result = await this.orchestrator.dispatch({
         action: 'scan-and-trade',
         workflow: 'scan-and-trade',
         params: {},
       });
+
+      if (!result.success) {
+        if (result.failedStep) {
+          this.log(`Scan workflow failed at step '${result.failedStep}': ${result.stepResults?.find(s => !s.success)?.error || 'unknown'}`, 'ERROR');
+        }
+        return;
+      }
+
+      // Extract results from workflow context to update UI intent
+      const ctx = result.context || {};
+      const signals = ctx.signals || [];
+      const approvedSignals = ctx.approvedSignals || [];
+      const executedSignals = ctx.executedSignals || [];
+      const totalExecuted = ctx.totalExecuted || 0;
+
+      if (signals.length > 0) {
+        const best = signals[0];
+        state.updateIntent({
+          status: totalExecuted > 0 ? 'executing' : 'signal_detected',
+          message: totalExecuted > 0
+            ? `Executed ${totalExecuted} trade(s)`
+            : `${best.type}: ${best.reason}`,
+          lastSignal: best,
+          modelProbability: best.modelProb,
+          currentEdge: best.edge,
+          action: `BUY ${best.side.toUpperCase()} @ ${best.priceCents}c`,
+        });
+
+        // Log signal activity
+        if (totalExecuted > 0) {
+          for (const exec of executedSignals) {
+            if (exec.status === 'executed') {
+              this.log(`Executed: ${exec.signal} → order ${exec.orderId}`, 'SUCCESS');
+            } else if (exec.status === 'blocked') {
+              this.log(`Blocked: ${exec.signal} (${exec.reason})`, 'WARN');
+            } else if (exec.status === 'error') {
+              this.log(`Execution error: ${exec.signal} — ${exec.error}`, 'ERROR');
+            }
+          }
+        }
+      } else {
+        state.updateIntent({
+          status: 'scanning',
+          message: 'Scanning for opportunities...',
+          currentEdge: null,
+          action: null,
+        });
+      }
     } catch (err) {
       this.log(`Scan error: ${err.message}`, 'ERROR');
     } finally {
@@ -313,31 +376,71 @@ class MasterAgent extends EventEmitter {
     }
   }
 
+  /**
+   * Take-profit loop. Runs every 3 seconds for open positions.
+   * Sells positions that hit >15% gain or >50% of max possible gain.
+   */
   async _runTakeProfit() {
     if (!this.running) return;
-    const stateManager = this.registry.get('state-manager');
-    if (stateManager.botState.openPositions.length === 0) return;
+    const state = this.state;
+    if (!state || state.openPositions.length === 0) return;
 
     try {
-      await this.orchestrator.dispatch({
+      const result = await this.orchestrator.dispatch({
         action: 'check-take-profit',
         workflow: 'check-take-profit',
         params: {},
       });
+
+      if (!result.success) return;
+
+      const ctx = result.context || {};
+      const tpSignals = ctx.takeProfitSignals || [];
+      const tpResults = ctx.results || [];
+
+      for (let i = 0; i < tpResults.length; i++) {
+        const tp = tpSignals[i];
+        const res = tpResults[i];
+        if (!tp) continue;
+
+        if (res.status === 'sold') {
+          state.updateIntent({
+            status: 'taking_profit',
+            message: `Take profit on ${tp.ticker}`,
+            action: `SELL ${tp.side.toUpperCase()} @ ${tp.sellPriceCents}c`,
+          });
+          this.log(
+            `Take profit: ${tp.ticker} ${tp.side} @ ${tp.sellPriceCents}c (+${tp.profitPct.toFixed(1)}%) | P&L: ${res.pnl >= 0 ? '+' : ''}$${res.pnl.toFixed(2)}`,
+            res.pnl >= 0 ? 'SUCCESS' : 'WARN'
+          );
+        } else if (res.status === 'error') {
+          this.log(`Take profit error: ${tp.ticker} — ${res.error}`, 'ERROR');
+        }
+      }
     } catch (err) {
       this.log(`Take profit error: ${err.message}`, 'ERROR');
     }
   }
 
+  /**
+   * Market discovery. Runs every 15 seconds.
+   * Finds new active contracts in the KXBTC15M series.
+   */
   async _runDiscovery() {
     if (!this.running) return;
     try {
-      await this.orchestrator.dispatch({ action: 'discover-markets', params: {} });
+      const result = await this.orchestrator.dispatch({ action: 'discover-markets', params: {} });
+      if (result.success && result.count > 0) {
+        this.log(`Tracking ${result.count} markets (${this.config.SERIES_TICKER})`);
+      }
     } catch (err) {
       this.log(`Discovery error: ${err.message}`, 'ERROR');
     }
   }
 
+  /**
+   * Balance refresh. Runs every 15 seconds.
+   */
   async _runBalanceRefresh() {
     if (!this.running) return;
     try {
