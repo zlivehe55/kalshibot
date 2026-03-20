@@ -266,14 +266,13 @@ class MasterAgent extends EventEmitter {
     });
 
     if (!startupResult.success) {
-      this.log(`Startup workflow failed: ${JSON.stringify(startupResult)}`, 'ERROR');
-      throw new Error('Startup workflow failed');
+      this.log(`Startup workflow failed: ${JSON.stringify(startupResult)}`, 'WARN');
+      this.log('Continuing anyway — periodic refresh will retry Kalshi connection', 'WARN');
+    } else {
+      const balance = stateManager.botState.balance;
+      this.log(`Kalshi connected. Balance: $${balance.total.toFixed(2)}`);
+      this.log(`Tracking ${stateManager.botState.activeMarkets.length} markets (${this.config.SERIES_TICKER})`);
     }
-
-    // Log startup results
-    const balance = stateManager.botState.balance;
-    this.log(`Kalshi connected. Balance: $${balance.total.toFixed(2)}`);
-    this.log(`Tracking ${stateManager.botState.activeMarkets.length} markets (${this.config.SERIES_TICKER})`);
 
     // Wait for Binance price feed
     stateManager.botState.updateIntent({
