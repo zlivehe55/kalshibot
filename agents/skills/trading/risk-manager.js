@@ -37,7 +37,8 @@ class RiskManager extends BaseSkill {
 
     switch (task.action) {
       case 'evaluate-signals': {
-        const signals = task.params?.signals || [];
+        // Accept ML-scored signals (preferred) or raw signals
+        const signals = task.params?.scoredSignals || task.params?.signals || [];
         const approved = [];
 
         for (const signal of signals) {
