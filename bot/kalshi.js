@@ -12,8 +12,10 @@ class KalshiClient {
 
   loadPrivateKey() {
     if (!this.privateKeyPem) {
-      // Support base64-encoded key from env var (for Vercel/serverless)
-      if (process.env.KALSHI_PRIVATE_KEY_BASE64) {
+      // Support inline PEM from env var
+      if (process.env.KALSHI_PRIVATE_KEY) {
+        this.privateKeyPem = process.env.KALSHI_PRIVATE_KEY.replace(/\\n/g, '\n');
+      } else if (process.env.KALSHI_PRIVATE_KEY_BASE64) {
         this.privateKeyPem = Buffer.from(process.env.KALSHI_PRIVATE_KEY_BASE64, 'base64').toString('utf8');
       } else {
         const keyPath = this.config.KALSHI_PRIVATE_KEY_PATH || './kalshi_private_key.pem';

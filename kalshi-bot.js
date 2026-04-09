@@ -80,10 +80,15 @@ let privateKeyPem = null;
 
 function loadPrivateKey() {
   if (!privateKeyPem) {
-    if (!fs.existsSync(CONFIG.KALSHI_PRIVATE_KEY_PATH)) {
-      throw new Error(`Private key file not found at: ${CONFIG.KALSHI_PRIVATE_KEY_PATH}`);
+    if (process.env.KALSHI_PRIVATE_KEY) {
+      privateKeyPem = process.env.KALSHI_PRIVATE_KEY.replace(/\\n/g, '\n');
+    } else if (process.env.KALSHI_PRIVATE_KEY_BASE64) {
+      privateKeyPem = Buffer.from(process.env.KALSHI_PRIVATE_KEY_BASE64, 'base64').toString('utf8');
+    } else if (fs.existsSync(CONFIG.KALSHI_PRIVATE_KEY_PATH)) {
+      privateKeyPem = fs.readFileSync(CONFIG.KALSHI_PRIVATE_KEY_PATH, 'utf8');
+    } else {
+      throw new Error(`Private key not found. Set KALSHI_PRIVATE_KEY, KALSHI_PRIVATE_KEY_BASE64, or provide a PEM file at ${CONFIG.KALSHI_PRIVATE_KEY_PATH}`);
     }
-    privateKeyPem = fs.readFileSync(CONFIG.KALSHI_PRIVATE_KEY_PATH, 'utf8');
   }
   return privateKeyPem;
 }
@@ -634,9 +639,11 @@ async function main() {
     process.exit(1);
   }
 
-  // Validate private key
-  if (!fs.existsSync(CONFIG.KALSHI_PRIVATE_KEY_PATH)) {
-    log(`Private key file not found: ${CONFIG.KALSHI_PRIVATE_KEY_PATH}`, 'ERROR');
+  // Validate private key - try loading it (supports inline PEM, base64, or file)
+  try {
+    loadPrivateKey();
+  } catch (e) {
+    log(e.message, 'ERROR');
     process.exit(1);
   }
 
