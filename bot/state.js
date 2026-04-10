@@ -106,27 +106,7 @@ class BotState extends EventEmitter {
     this.intentLog = [];
 
     // Stats
-    this.stats = {
-      totalTrades: 0,
-      wins: 0,
-      losses: 0,
-      totalPnL: 0,
-      volumeTraded: 0,
-      startTime: Date.now(),
-      tradesPerHour: 0,
-      bestTrade: 0,
-      worstTrade: 0,
-      avgEdge: 0,
-      totalEdge: 0,
-      grossWins: 0,
-      grossLosses: 0,
-      streak: 0,
-      strategyStats: {},
-      coinStats: {},
-      signalTypeStats: {},
-      edgeBucketStats: {},
-      unrealizedPnL: 0,
-    };
+    this.stats = this._createFreshStats(Date.now(), 0);
 
     // Strategy model state
     this.model = {
@@ -146,6 +126,30 @@ class BotState extends EventEmitter {
     // Persistence
     this._saveTimer = null;
     this._loadState();
+  }
+
+  _createFreshStats(startTime, unrealizedPnL = 0) {
+    return {
+      totalTrades: 0,
+      wins: 0,
+      losses: 0,
+      totalPnL: 0,
+      volumeTraded: 0,
+      startTime,
+      tradesPerHour: 0,
+      bestTrade: 0,
+      worstTrade: 0,
+      avgEdge: 0,
+      totalEdge: 0,
+      grossWins: 0,
+      grossLosses: 0,
+      streak: 0,
+      strategyStats: {},
+      coinStats: {},
+      signalTypeStats: {},
+      edgeBucketStats: {},
+      unrealizedPnL,
+    };
   }
 
   // ===== Persistence =====
@@ -543,6 +547,34 @@ class BotState extends EventEmitter {
       pnlHistory: this.pnlHistory,
       model: this.model,
     };
+  }
+
+  resetSession() {
+    const now = Date.now();
+    const unrealizedPnL = Number(this.stats?.unrealizedPnL) || 0;
+
+    this.stats = this._createFreshStats(now, unrealizedPnL);
+    this.pnlHistory = [];
+    this.tradeLog = [];
+    this.intentLog = [];
+    this.closedPositions = [];
+
+    // New risk baseline starts from current account equity.
+    if (this.balance && Number.isFinite(this.balance.total) && this.balance.total > 0) {
+      this.startingBalance = this.balance.total;
+    }
+
+    this.updateIntent({
+      status: 'scanning',
+      message: 'Session reset. Scanning for opportunities...',
+      lastSignal: null,
+      modelProbability: null,
+      currentEdge: null,
+      action: null,
+    });
+    this.emit('stats', this.stats);
+    this._scheduleSave();
+    return this.getSnapshot();
   }
 }
 

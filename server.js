@@ -156,6 +156,16 @@ app.get('/api/state', (req, res) => {
   }
 });
 
+// API: reset session P&L/stat history
+app.post('/api/session/reset', (req, res) => {
+  if (!agent || !agent.state) {
+    return res.status(503).json({ error: 'Agent not started' });
+  }
+  const snapshot = agent.state.resetSession();
+  io.emit('snapshot', snapshot);
+  return res.json({ status: 'reset', snapshot });
+});
+
 // API: download full bot logs/thought process
 app.get('/api/logs/download', (req, res) => {
   if (!agent || !agent.state) {

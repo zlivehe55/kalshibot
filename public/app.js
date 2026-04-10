@@ -526,6 +526,7 @@ const toggleBtn = el('bot-toggle');
 const toggleIcon = el('toggle-icon');
 const toggleLabel = el('toggle-label');
 const downloadLogsBtn = el('download-logs');
+const resetSessionBtn = el('reset-session');
 
 function updateToggleUI(running) {
   botRunning = running;
@@ -562,6 +563,29 @@ toggleBtn.addEventListener('click', async () => {
 if (downloadLogsBtn) {
   downloadLogsBtn.addEventListener('click', () => {
     window.location.href = '/api/logs/download';
+  });
+}
+
+if (resetSessionBtn) {
+  resetSessionBtn.addEventListener('click', async () => {
+    const ok = window.confirm('Reset session stats/P&L history now? Open positions remain unchanged.');
+    if (!ok) return;
+
+    resetSessionBtn.disabled = true;
+    try {
+      const res = await fetch('/api/session/reset', { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok || data.error) {
+        throw new Error(data.error || 'session reset failed');
+      }
+      // Server emits a fresh snapshot; fallback to reload for UI consistency.
+      setTimeout(() => window.location.reload(), 300);
+    } catch (err) {
+      console.error('Reset session failed:', err);
+      alert('Reset session failed. Check server logs.');
+    } finally {
+      resetSessionBtn.disabled = false;
+    }
   });
 }
 
