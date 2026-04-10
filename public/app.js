@@ -595,14 +595,29 @@ socket.on('connect', () => {
 });
 
 socket.on('snapshot', (data) => {
-  // Merge P&L history: keep whichever is longer/more complete
-  if (state.pnlHistory && state.pnlHistory.length > 0 && data.pnlHistory) {
-    if (data.pnlHistory.length >= state.pnlHistory.length) {
-      state.pnlHistory = data.pnlHistory;
+  const isSessionResetSnapshot =
+    (data?.intent?.message && String(data.intent.message).toLowerCase().includes('session reset')) ||
+    ((data?.stats?.totalTrades || 0) === 0 && (data?.tradeLog?.length || 0) === 0);
+
+  if (isSessionResetSnapshot) {
+    // Hard reset chart/session cache when user explicitly resets session.
+    state.pnlHistory = [];
+    try {
+      localStorage.removeItem('kalshibot_pnlHistory');
+      localStorage.setItem('kalshibot_startTime', String(data.startTime || data.stats?.startTime || Date.now()));
+    } catch (e) {
+      // Ignore localStorage errors
     }
-    // else: keep client's existing pnlHistory (accumulated during session)
   } else {
-    state.pnlHistory = data.pnlHistory || [];
+    // Merge P&L history: keep whichever is longer/more complete
+    if (state.pnlHistory && state.pnlHistory.length > 0 && data.pnlHistory) {
+      if (data.pnlHistory.length >= state.pnlHistory.length) {
+        state.pnlHistory = data.pnlHistory;
+      }
+      // else: keep client's existing pnlHistory (accumulated during session)
+    } else {
+      state.pnlHistory = data.pnlHistory || [];
+    }
   }
 
   // Always take authoritative data from server
@@ -616,8 +631,8 @@ socket.on('snapshot', (data) => {
   state.stats = data.stats || {};
   state.model = data.model || {};
 
-  // Reconcile: if server stats show $0 P&L but pnlHistory has data, use pnlHistory's cumulative
-  if ((!state.stats.totalPnL || state.stats.totalPnL === 0) && state.pnlHistory.length > 0) {
+  // Reconcile only for stale server snapshots (avoid overriding explicit session reset).
+  if (!isSessionResetSnapshot && (!state.stats.totalPnL || state.stats.totalPnL === 0) && state.pnlHistory.length > 0) {
     const lastEntry = state.pnlHistory[state.pnlHistory.length - 1];
     if (lastEntry && lastEntry.cumulative && lastEntry.cumulative !== 0) {
       state.stats.totalPnL = lastEntry.cumulative;
