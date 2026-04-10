@@ -80,6 +80,12 @@ const config = {
   TREND_ROC_THRESHOLD: parseFloat(process.env.TREND_ROC_THRESHOLD) || 0.02,
   TREND_BOOST: parseFloat(process.env.TREND_BOOST) || 0.25,
   TREND_PENALTY: parseFloat(process.env.TREND_PENALTY) || 0.40,
+  TAKE_PROFIT_AGGRESSIVE_PCT: Number.isFinite(parseFloat(process.env.TAKE_PROFIT_AGGRESSIVE_PCT))
+    ? parseFloat(process.env.TAKE_PROFIT_AGGRESSIVE_PCT)
+    : 50,
+  TAKE_PROFIT_HOLD_CENTS: Number.isFinite(parseInt(process.env.TAKE_PROFIT_HOLD_CENTS, 10))
+    ? parseInt(process.env.TAKE_PROFIT_HOLD_CENTS, 10)
+    : 90,
 
   // Position sizing
   // Backtest-optimized: conservative Kelly to survive binary option variance

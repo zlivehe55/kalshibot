@@ -36,6 +36,8 @@ class SignalGenerator extends BaseSkill {
     this.maxEdgeAcceptance = 30;
     this.disabledCoins = new Set(['DOGE']);
     this.coinEdgeMultipliers = { BTC: 0.75 };
+    this.takeProfitAggressivePct = 50;
+    this.takeProfitHoldThreshold = 0.90;
     this.tradingWindow = 4 * 60 * 1000;
     this.minContractPrice = 0.48;
     this.maxContractPrice = 0.88;
@@ -60,6 +62,13 @@ class SignalGenerator extends BaseSkill {
       BTC: 0.75,
       ...(config.COIN_EDGE_MULTIPLIERS || {}),
     };
+    this.takeProfitAggressivePct = Number.isFinite(config.TAKE_PROFIT_AGGRESSIVE_PCT)
+      ? config.TAKE_PROFIT_AGGRESSIVE_PCT
+      : 50;
+    const holdCents = Number.isFinite(config.TAKE_PROFIT_HOLD_CENTS)
+      ? config.TAKE_PROFIT_HOLD_CENTS
+      : 90;
+    this.takeProfitHoldThreshold = holdCents / 100;
     this.tradingWindow = (config.TRADING_WINDOW || 4) * 60 * 1000;
     this.minContractPrice = (config.MIN_CONTRACT_PRICE || 48) / 100;
     this.maxContractPrice = (config.MAX_CONTRACT_PRICE || 88) / 100;
@@ -353,17 +362,21 @@ class SignalGenerator extends BaseSkill {
       if (!currentValue || currentValue <= 0) continue;
 
       const profitPct = ((currentValue - entryPrice) / entryPrice) * 100;
-      const maxGain = 1 - entryPrice;
-      const gainFraction = (currentValue - entryPrice) / maxGain;
+      // Smart TP:
+      // - HOLD mode: if bid is >= 90c, hold for settlement ($1.00 payout edge).
+      // - AGGRESSIVE mode: if profit >= 50% and bid < 90c, lock it in immediately.
+      if (currentValue >= this.takeProfitHoldThreshold) {
+        continue;
+      }
 
-      if (profitPct > 15 || gainFraction > 0.5) {
+      if (profitPct >= this.takeProfitAggressivePct) {
         signals.push({
           type: 'TAKE_PROFIT', orderId: pos.orderId, ticker: pos.ticker,
           side: pos.side, sellPriceCents: Math.round(currentValue * 100),
           sellPriceDecimal: currentValue,
           contracts: filledContracts,
           profitPct,
-          reason: `Take profit: bought@${(entryPrice * 100).toFixed(0)}c sell@${(currentValue * 100).toFixed(0)}c (+${profitPct.toFixed(1)}%)`,
+          reason: `TP aggressive: bought@${(entryPrice * 100).toFixed(0)}c sell@${(currentValue * 100).toFixed(0)}c (+${profitPct.toFixed(1)}%), hold-threshold=${Math.round(this.takeProfitHoldThreshold * 100)}c`,
         });
       }
     }
