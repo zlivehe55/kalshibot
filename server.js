@@ -43,8 +43,18 @@ const parseCoinMultipliers = (raw, fallback = {}) => {
   }
   return out;
 };
+const parseNumberOr = (raw, fallback) => {
+  const value = Number(raw);
+  return Number.isFinite(value) ? value : fallback;
+};
+const parseIntOr = (raw, fallback) => {
+  const value = parseInt(raw, 10);
+  return Number.isFinite(value) ? value : fallback;
+};
 const DEFAULT_SERIES_TICKERS = ['KXBTC15M', 'KXETH15M', 'KXSOL15M', 'KXXRP15M', 'KXDOGE15M'];
-const seriesTickers = parseList(process.env.SERIES_TICKERS, [process.env.SERIES_TICKER || DEFAULT_SERIES_TICKERS[0]]);
+const seriesTickers = process.env.SERIES_TICKERS
+  ? parseList(process.env.SERIES_TICKERS, DEFAULT_SERIES_TICKERS)
+  : (process.env.SERIES_TICKER ? [process.env.SERIES_TICKER] : DEFAULT_SERIES_TICKERS);
 const effectiveSeriesTickers = seriesTickers.length > 0 ? seriesTickers : DEFAULT_SERIES_TICKERS;
 
 // Build config from env
@@ -61,42 +71,34 @@ const config = {
   SUPPORTED_SPOT_SYMBOLS: ['btcusdt', 'ethusdt', 'solusdt', 'xrpusdt', 'dogeusdt'],
   DISABLED_COINS: parseList(process.env.DISABLED_COINS, ['DOGE']).map(c => c.toUpperCase()),
   COIN_EDGE_MULTIPLIERS: parseCoinMultipliers(process.env.COIN_EDGE_MULTIPLIERS, { BTC: 0.75 }),
-  SLOT_DURATION: parseInt(process.env.SLOT_DURATION) || 900, // 15 min
+  SLOT_DURATION: parseIntOr(process.env.SLOT_DURATION, 900), // 15 min
 
   // Strategy thresholds
-  MIN_EDGE: parseFloat(process.env.MIN_EDGE) || 8.0,
-  // Backtest-optimized: higher threshold to filter overconfident signals
-  MIN_DIVERGENCE: parseFloat(process.env.MIN_DIVERGENCE) || 12.0,
-  TRADING_WINDOW: parseInt(process.env.TRADING_WINDOW) || 15, // minutes
+  MIN_EDGE: parseNumberOr(process.env.MIN_EDGE, 4.0),
+  MIN_DIVERGENCE: parseNumberOr(process.env.MIN_DIVERGENCE, 6.0),
+  TRADING_WINDOW: parseIntOr(process.env.TRADING_WINDOW, 15), // minutes
   // Backtest-optimized: contracts above 65c have terrible payoff ratio
-  MIN_CONTRACT_PRICE: parseInt(process.env.MIN_CONTRACT_PRICE) || 30, // cents
-  MAX_CONTRACT_PRICE: parseInt(process.env.MAX_CONTRACT_PRICE) || 70, // cents
+  MIN_CONTRACT_PRICE: parseIntOr(process.env.MIN_CONTRACT_PRICE, 30), // cents
+  MAX_CONTRACT_PRICE: parseIntOr(process.env.MAX_CONTRACT_PRICE, 70), // cents
 
   // 15m trend indicator defaults (aligned to 15m contracts)
   TREND_ENABLED: process.env.TREND_ENABLED !== 'false',
-  TREND_FAST_PERIOD: parseInt(process.env.TREND_FAST_PERIOD) || 180,     // 3 min
-  TREND_SLOW_PERIOD: parseInt(process.env.TREND_SLOW_PERIOD) || 900,     // 15 min
-  TREND_ROC_WINDOW: parseInt(process.env.TREND_ROC_WINDOW) || 900,       // 15 min
-  TREND_ROC_THRESHOLD: parseFloat(process.env.TREND_ROC_THRESHOLD) || 0.02,
-  TREND_BOOST: parseFloat(process.env.TREND_BOOST) || 0.25,
-  TREND_PENALTY: parseFloat(process.env.TREND_PENALTY) || 0.40,
-  TAKE_PROFIT_AGGRESSIVE_PCT: Number.isFinite(parseFloat(process.env.TAKE_PROFIT_AGGRESSIVE_PCT))
-    ? parseFloat(process.env.TAKE_PROFIT_AGGRESSIVE_PCT)
-    : 50,
-  TAKE_PROFIT_HOLD_CENTS: Number.isFinite(parseInt(process.env.TAKE_PROFIT_HOLD_CENTS, 10))
-    ? parseInt(process.env.TAKE_PROFIT_HOLD_CENTS, 10)
-    : 90,
+  TREND_FAST_PERIOD: parseIntOr(process.env.TREND_FAST_PERIOD, 180),     // 3 min
+  TREND_SLOW_PERIOD: parseIntOr(process.env.TREND_SLOW_PERIOD, 900),     // 15 min
+  TREND_ROC_WINDOW: parseIntOr(process.env.TREND_ROC_WINDOW, 900),       // 15 min
+  TREND_ROC_THRESHOLD: parseNumberOr(process.env.TREND_ROC_THRESHOLD, 0.02),
+  TREND_BOOST: parseNumberOr(process.env.TREND_BOOST, 0.25),
+  TREND_PENALTY: parseNumberOr(process.env.TREND_PENALTY, 0.40),
+  TAKE_PROFIT_AGGRESSIVE_PCT: parseNumberOr(process.env.TAKE_PROFIT_AGGRESSIVE_PCT, 50),
+  TAKE_PROFIT_HOLD_CENTS: parseIntOr(process.env.TAKE_PROFIT_HOLD_CENTS, 101),
 
   // Position sizing
-  // Backtest-optimized: conservative Kelly to survive binary option variance
   USE_KELLY_SIZING: process.env.USE_KELLY_SIZING !== 'false',
-  KELLY_FRACTION: parseFloat(process.env.KELLY_FRACTION) || 0.08,
-  MAX_POSITION_SIZE: Math.min(1.5, parseFloat(process.env.MAX_POSITION_SIZE) || 1.5),
-  MAX_POSITIONS_PER_CONTRACT: parseInt(process.env.MAX_POSITIONS_PER_CONTRACT) || 1,
-  MAX_TOTAL_OPEN_POSITIONS: parseInt(process.env.MAX_TOTAL_OPEN_POSITIONS) || 10,
-  MAX_ACCOUNT_RISK_PCT: Number.isFinite(parseFloat(process.env.MAX_ACCOUNT_RISK_PCT))
-    ? parseFloat(process.env.MAX_ACCOUNT_RISK_PCT)
-    : 0.30,
+  KELLY_FRACTION: parseNumberOr(process.env.KELLY_FRACTION, 0.05),
+  MAX_POSITION_SIZE: Math.min(1.5, parseNumberOr(process.env.MAX_POSITION_SIZE, 1.5)),
+  MAX_POSITIONS_PER_CONTRACT: parseIntOr(process.env.MAX_POSITIONS_PER_CONTRACT, 1),
+  MAX_TOTAL_OPEN_POSITIONS: parseIntOr(process.env.MAX_TOTAL_OPEN_POSITIONS, 1),
+  MAX_ACCOUNT_RISK_PCT: parseNumberOr(process.env.MAX_ACCOUNT_RISK_PCT, 0.30),
 };
 
 // Express + Socket.io
@@ -111,30 +113,54 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 // Create the MasterAgent
 const agent = new MasterAgent(config);
+let lastBotStartError = null;
 
 // Health check
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', uptime: process.uptime(), botRunning: agent.running });
+  res.json({
+    status: 'ok',
+    uptime: process.uptime(),
+    botRunning: agent.running,
+    lastBotStartError,
+  });
 });
 
 // Bot control: start/stop
 app.post('/api/bot/start', (req, res) => {
+  console.log(`[Server] /api/bot/start requested (running=${agent.running})`);
   if (agent.running) {
     return res.json({ status: 'already_running' });
   }
   // Respond immediately — start() is long-running (connects to feeds, waits for prices)
   res.json({ status: 'starting' });
+  io.emit('bot:status', { running: false, starting: true });
   agent.start()
     .then(() => {
+      lastBotStartError = null;
+      console.log('[Server] Bot start completed');
       io.emit('bot:status', { running: true });
     })
     .catch((err) => {
+      lastBotStartError = err.message;
       console.error('[Server] Bot start failed:', err.message);
+      if (err && err.stack) {
+        console.error('[Server] Bot start stack:', err.stack);
+      }
+      // Emit a visible log entry for UI trade log panel.
+      if (agent.state && typeof agent.state.logTrade === 'function') {
+        agent.state.logTrade({
+          type: 'LOG',
+          level: 'ERROR',
+          message: `[Server] Bot start failed: ${err.message}`,
+          timestamp: Date.now(),
+        });
+      }
       io.emit('bot:status', { running: false, error: err.message });
     });
 });
 
 app.post('/api/bot/stop', (req, res) => {
+  console.log(`[Server] /api/bot/stop requested (running=${agent.running})`);
   if (!agent.running) {
     return res.json({ status: 'already_stopped' });
   }

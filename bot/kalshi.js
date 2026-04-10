@@ -2,6 +2,23 @@ const axios = require('axios');
 const crypto = require('crypto');
 const fs = require('fs');
 
+function normalizeInlinePem(raw) {
+  if (!raw || typeof raw !== 'string') return null;
+  const text = raw.trim();
+  const begin = '-----BEGIN RSA PRIVATE KEY-----';
+  const end = '-----END RSA PRIVATE KEY-----';
+  if (!text.includes(begin) || !text.includes(end)) return null;
+
+  const body = text
+    .replace(begin, '')
+    .replace(end, '')
+    .replace(/\s+/g, '');
+  if (!body) return null;
+
+  const chunks = body.match(/.{1,64}/g) || [];
+  return `${begin}\n${chunks.join('\n')}\n${end}\n`;
+}
+
 function toDecimalPrice(value) {
   if (value == null) return null;
   const n = Number(value);
@@ -31,11 +48,17 @@ class KalshiClient {
     if (!this.privateKeyPem) {
       // Support inline PEM from env var
       if (process.env.KALSHI_PRIVATE_KEY) {
-        this.privateKeyPem = process.env.KALSHI_PRIVATE_KEY.replace(/\\n/g, '\n');
+        const normalized = normalizeInlinePem(process.env.KALSHI_PRIVATE_KEY);
+        this.privateKeyPem = normalized || process.env.KALSHI_PRIVATE_KEY.replace(/\\n/g, '\n');
       } else if (process.env.KALSHI_PRIVATE_KEY_BASE64) {
         this.privateKeyPem = Buffer.from(process.env.KALSHI_PRIVATE_KEY_BASE64, 'base64').toString('utf8');
       } else {
         const keyPath = this.config.KALSHI_PRIVATE_KEY_PATH || './kalshi_private_key.pem';
+        const inlineFromPath = normalizeInlinePem(keyPath);
+        if (inlineFromPath) {
+          this.privateKeyPem = inlineFromPath;
+          return this.privateKeyPem;
+        }
         if (!fs.existsSync(keyPath)) {
           throw new Error(`Private key not found: ${keyPath}. Set KALSHI_PRIVATE_KEY_BASE64 env var for serverless deployments.`);
         }

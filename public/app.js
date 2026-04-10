@@ -751,7 +751,37 @@ socket.on('connection:binance', (connected) => {
 });
 
 socket.on('bot:status', (data) => {
-  updateToggleUI(data.running);
+  if (data && data.starting) {
+    const badge = el('bot-status');
+    if (badge) {
+      badge.textContent = 'STARTING';
+      badge.className = 'status-badge initializing';
+    }
+    const msg = el('intent-message');
+    if (msg) msg.textContent = 'Starting bot...';
+    return;
+  }
+
+  updateToggleUI(!!(data && data.running));
+
+  if (data && data.error) {
+    const badge = el('bot-status');
+    if (badge) {
+      badge.textContent = 'ERROR';
+      badge.className = 'status-badge error';
+    }
+    const msg = el('intent-message');
+    if (msg) msg.textContent = `Start failed: ${data.error}`;
+
+    state.tradeLog.unshift({
+      type: 'LOG',
+      level: 'ERROR',
+      message: `[Server] Bot start failed: ${data.error}`,
+      timestamp: Date.now(),
+    });
+    if (state.tradeLog.length > 50) state.tradeLog.pop();
+    updateTradeLog(state.tradeLog);
+  }
 });
 
 socket.on('disconnect', () => {
