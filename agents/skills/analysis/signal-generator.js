@@ -34,6 +34,8 @@ class SignalGenerator extends BaseSkill {
     this.maxPositionSize = 25;
     this.hardMaxPositionSize = 1.5;
     this.maxEdgeAcceptance = 30;
+    this.disabledCoins = new Set(['DOGE']);
+    this.coinEdgeMultipliers = { BTC: 0.75 };
     this.tradingWindow = 4 * 60 * 1000;
     this.minContractPrice = 0.48;
     this.maxContractPrice = 0.88;
@@ -50,6 +52,14 @@ class SignalGenerator extends BaseSkill {
     this.maxPositionSize = config.MAX_POSITION_SIZE || 25;
     this.hardMaxPositionSize = Math.min(1.5, this.maxPositionSize);
     this.maxEdgeAcceptance = 30;
+    this.disabledCoins = new Set(
+      (Array.isArray(config.DISABLED_COINS) ? config.DISABLED_COINS : ['DOGE'])
+        .map(c => String(c).toUpperCase())
+    );
+    this.coinEdgeMultipliers = {
+      BTC: 0.75,
+      ...(config.COIN_EDGE_MULTIPLIERS || {}),
+    };
     this.tradingWindow = (config.TRADING_WINDOW || 4) * 60 * 1000;
     this.minContractPrice = (config.MIN_CONTRACT_PRICE || 48) / 100;
     this.maxContractPrice = (config.MAX_CONTRACT_PRICE || 88) / 100;
@@ -107,6 +117,7 @@ class SignalGenerator extends BaseSkill {
       skippedMissingOpenPrice: 0,
       skippedMissingQuotes: 0,
       skippedPriceRange: 0,
+      skippedDisabledCoin: 0,
       skippedEdgeTooHigh: 0,
       skippedDisabledBucket: 0,
       bestEdgeYes: null,
@@ -158,6 +169,14 @@ class SignalGenerator extends BaseSkill {
       }
 
       const coin = state.getCoinFromTicker ? state.getCoinFromTicker(market.ticker).toLowerCase() : 'btc';
+      const coinUpper = coin.toUpperCase();
+      if (this.disabledCoins.has(coinUpper)) {
+        stats.skippedDisabledCoin++;
+        continue;
+      }
+      const coinEdgeMult = Number.isFinite(this.coinEdgeMultipliers[coinUpper])
+        ? this.coinEdgeMultipliers[coinUpper]
+        : 1;
       const spotPrice = state.getSpotPriceForTicker ? state.getSpotPriceForTicker(market.ticker) : state.btcPrice.binance;
       if (!spotPrice) {
         stats.reason = 'no_spot_price';
@@ -202,8 +221,8 @@ class SignalGenerator extends BaseSkill {
 
       const trendMultYes = trendSkill.getTrendMultiplier('yes');
       const trendMultNo = trendSkill.getTrendMultiplier('no');
-      const adjustedEdgeYes = modelEdgeYes * trendMultYes;
-      const adjustedEdgeNo = modelEdgeNo * trendMultNo;
+      const adjustedEdgeYes = modelEdgeYes * trendMultYes * coinEdgeMult;
+      const adjustedEdgeNo = modelEdgeNo * trendMultNo * coinEdgeMult;
       const currentTrend = trendData.trend || 'NEUTRAL';
 
       if (adjustedEdgeYes > this.minDivergence && yesInRange) {
@@ -256,7 +275,7 @@ class SignalGenerator extends BaseSkill {
 
       // ===== STRATEGY 2: POLYMARKET ARBITRAGE =====
       if (poly) {
-        const polyEdgeYes = (poly.upMid - market.yesAsk) * 100;
+        const polyEdgeYes = (poly.upMid - market.yesAsk) * 100 * coinEdgeMult;
         if (stats.bestPolyEdgeYes === null || polyEdgeYes > stats.bestPolyEdgeYes) stats.bestPolyEdgeYes = polyEdgeYes;
         if (polyEdgeYes > this.minEdge * 1.5 && yesInRange) {
           if (polyEdgeYes > this.maxEdgeAcceptance) {

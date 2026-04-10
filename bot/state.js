@@ -296,7 +296,12 @@ class BotState extends EventEmitter {
     if (idx === -1) return;
 
     const position = this.openPositions.splice(idx, 1)[0];
-    const closed = { ...position, ...result, settleTime: Date.now() };
+    const closed = {
+      ...position,
+      ...result,
+      coin: position.coin || (position.ticker ? getCoinFromTicker(position.ticker) : null),
+      settleTime: Date.now(),
+    };
     this.closedPositions.push(closed);
 
     // Cap closed positions
@@ -437,8 +442,10 @@ class BotState extends EventEmitter {
   // ===== Trade & Position Tracking =====
 
   logTrade(trade) {
+    const derivedCoin = trade.coin || (trade.ticker ? getCoinFromTicker(trade.ticker) : null);
     const entry = {
       ...trade,
+      coin: derivedCoin,
       timestamp: normalizeTimestamp(trade.timestamp),
     };
     this.tradeLog.unshift(entry);
@@ -508,12 +515,29 @@ class BotState extends EventEmitter {
   }
 
   getLogsExport() {
+    const closedTradesDetailed = this.closedPositions.map((p) => ({
+      timestamp: p.settleTime || p.entryTime || Date.now(),
+      coin: p.coin || (p.ticker ? getCoinFromTicker(p.ticker) : null),
+      ticker: p.ticker,
+      side: p.side,
+      contracts: p.filledContracts || p.contracts || 0,
+      entryPriceCents: p.priceCents ?? (Number.isFinite(p.priceDecimal) ? Math.round(p.priceDecimal * 100) : null),
+      exitType: p.exitType || null,
+      result: p.result || null,
+      payout: p.payout ?? null,
+      cost: p.cost ?? p.totalCost ?? null,
+      pnl: p.pnl ?? null,
+      won: p.won ?? null,
+      reason: p.reason || null,
+    }));
+
     return {
       exportedAt: new Date().toISOString(),
       stats: this.stats,
       balance: this.balance,
       openPositions: this.openPositions,
       pendingOrders: this.pendingOrders,
+      closedTradesDetailed,
       tradeLog: this.tradeLog,
       intentLog: this.intentLog,
       pnlHistory: this.pnlHistory,

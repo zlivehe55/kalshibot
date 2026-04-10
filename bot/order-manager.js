@@ -35,6 +35,16 @@ function getOrderCostCents(order) {
   return parseNumeric(order?.taker_fill_cost) + parseNumeric(order?.taker_fees);
 }
 
+function coinFromTicker(ticker) {
+  if (!ticker) return 'UNKNOWN';
+  if (ticker.startsWith('KXBTC')) return 'BTC';
+  if (ticker.startsWith('KXETH')) return 'ETH';
+  if (ticker.startsWith('KXSOL')) return 'SOL';
+  if (ticker.startsWith('KXXRP')) return 'XRP';
+  if (ticker.startsWith('KXDOGE')) return 'DOGE';
+  return 'UNKNOWN';
+}
+
 class OrderManager {
   constructor(kalshi, state, db, config = {}) {
     this.kalshi = kalshi;
@@ -171,6 +181,7 @@ class OrderManager {
       const position = {
         orderId: pendingOrder.orderId,
         clientOrderId: pendingOrder.clientOrderId,
+        coin: pendingOrder.coin || coinFromTicker(pendingOrder.ticker),
         ticker: pendingOrder.ticker,
         type: pendingOrder.signalType,
         side: pendingOrder.side,

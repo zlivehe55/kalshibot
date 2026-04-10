@@ -32,6 +32,16 @@ function getOrderCostCents(order) {
   return parseNumeric(order?.taker_fill_cost) + parseNumeric(order?.taker_fees);
 }
 
+function coinFromTicker(ticker) {
+  if (!ticker) return 'UNKNOWN';
+  if (ticker.startsWith('KXBTC')) return 'BTC';
+  if (ticker.startsWith('KXETH')) return 'ETH';
+  if (ticker.startsWith('KXSOL')) return 'SOL';
+  if (ticker.startsWith('KXXRP')) return 'XRP';
+  if (ticker.startsWith('KXDOGE')) return 'DOGE';
+  return 'UNKNOWN';
+}
+
 class OrderExecutor extends BaseSkill {
   constructor() {
     super({
@@ -47,7 +57,7 @@ class OrderExecutor extends BaseSkill {
     this.orderCooldownMs = 15000;
     this._lastOrderByTicker = new Map();
     this._orderingTickers = new Set();
-    this._orderTickerLocks = new Map();
+    this._activeTickerLocks = new Map();
   }
 
   async initialize(context) {
@@ -61,11 +71,7 @@ class OrderExecutor extends BaseSkill {
       kalshiSkill.getClient(),
       stateManager.botState,
       analyticsSkill.getDB(),
-      {
-        ...context.config,
-        onPositionPromoted: ({ orderId }) => this._releaseTickerLockByOrder(orderId),
-        onOrderFinalized: ({ orderId }) => this._releaseTickerLockByOrder(orderId),
-      }
+      context.config
     );
 
     this.maxPositionSize = Math.min(1.5, context.config.MAX_POSITION_SIZE || 1.5);
@@ -90,6 +96,7 @@ class OrderExecutor extends BaseSkill {
         let executedCount = 0;
         const maxPerScan = 1;
         let lastTicker = null;
+        this._cleanupExpiredTickerLocks();
 
         // Global safety: if anything is pending, do not place new orders.
         if (state.pendingOrders.length > 0) {
@@ -105,6 +112,14 @@ class OrderExecutor extends BaseSkill {
 
         for (const signal of signals) {
           if (executedCount >= maxPerScan) break;
+          if (this._isTickerLocked(signal.ticker)) {
+            results.push({
+              signal: signal.ticker,
+              status: 'blocked',
+              reason: 'ticker_locked_until_close',
+            });
+            continue;
+          }
 
           if (this._orderingTickers.has(signal.ticker)) {
             results.push({
@@ -215,6 +230,8 @@ class OrderExecutor extends BaseSkill {
 
     try {
       const clientOrderId = `bot-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`;
+      // Sticky lock before API call; release only after contract close window.
+      this._lockTickerUntilClose(executionSignal.ticker, executionSignal.closeTime);
       const orderData = {
         ticker: executionSignal.ticker,
         action: 'buy',
@@ -259,6 +276,7 @@ class OrderExecutor extends BaseSkill {
       const pendingOrder = {
         orderId: order.order_id,
         clientOrderId,
+        coin: coinFromTicker(executionSignal.ticker),
         ticker: executionSignal.ticker,
         signalType: executionSignal.type,
         side: executionSignal.side,
@@ -276,7 +294,6 @@ class OrderExecutor extends BaseSkill {
         isDualSide: executionSignal.isDualSide || false,
       };
 
-      this._orderTickerLocks.set(order.order_id, executionSignal.ticker);
       this.orderManager.addPendingOrder(pendingOrder);
 
       state.balance.available -= cost;
@@ -310,16 +327,35 @@ class OrderExecutor extends BaseSkill {
       return { signal: executionSignal.ticker, status: 'executed', orderId: order.order_id };
     } catch (err) {
       this._orderingTickers.delete(signal.ticker);
+      // API failed before a valid order lifecycle; release the lock to avoid deadlock.
+      this._activeTickerLocks.delete(signal.ticker);
       const detail = err.response ? `${err.response.status} - ${JSON.stringify(err.response.data)}` : err.message;
       return { signal: signal.ticker, status: 'error', error: detail };
     }
   }
 
-  _releaseTickerLockByOrder(orderId) {
-    const ticker = this._orderTickerLocks.get(orderId);
-    if (!ticker) return;
-    this._orderTickerLocks.delete(orderId);
-    this._orderingTickers.delete(ticker);
+  _isTickerLocked(ticker) {
+    const until = this._activeTickerLocks.get(ticker);
+    return Number.isFinite(until) && until > Date.now();
+  }
+
+  _lockTickerUntilClose(ticker, closeTimeMs) {
+    const now = Date.now();
+    const releaseAt = Math.max(
+      now + 10000,
+      (Number.isFinite(closeTimeMs) ? closeTimeMs : now) + 60000
+    );
+    this._activeTickerLocks.set(ticker, releaseAt);
+  }
+
+  _cleanupExpiredTickerLocks() {
+    const now = Date.now();
+    for (const [ticker, until] of this._activeTickerLocks.entries()) {
+      if (!Number.isFinite(until) || until <= now) {
+        this._activeTickerLocks.delete(ticker);
+        this._orderingTickers.delete(ticker);
+      }
+    }
   }
 
   async stop() {

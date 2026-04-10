@@ -28,6 +28,21 @@ const parseList = (raw, fallback) => {
     .filter(Boolean);
   return parts.length > 0 ? parts : fallback;
 };
+const parseCoinMultipliers = (raw, fallback = {}) => {
+  const out = { ...fallback };
+  const parts = String(raw || '')
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean);
+  for (const part of parts) {
+    const [coinRaw, multRaw] = part.split(':').map(x => (x || '').trim());
+    const coin = coinRaw.toUpperCase();
+    const mult = Number(multRaw);
+    if (!coin || !Number.isFinite(mult) || mult < 0) continue;
+    out[coin] = mult;
+  }
+  return out;
+};
 const DEFAULT_SERIES_TICKERS = ['KXBTC15M', 'KXETH15M', 'KXSOL15M', 'KXXRP15M', 'KXDOGE15M'];
 const seriesTickers = parseList(process.env.SERIES_TICKERS, [process.env.SERIES_TICKER || DEFAULT_SERIES_TICKERS[0]]);
 const effectiveSeriesTickers = seriesTickers.length > 0 ? seriesTickers : DEFAULT_SERIES_TICKERS;
@@ -44,6 +59,8 @@ const config = {
   SERIES_TICKER: process.env.SERIES_TICKER || effectiveSeriesTickers[0],
   SERIES_TICKERS: effectiveSeriesTickers,
   SUPPORTED_SPOT_SYMBOLS: ['btcusdt', 'ethusdt', 'solusdt', 'xrpusdt', 'dogeusdt'],
+  DISABLED_COINS: parseList(process.env.DISABLED_COINS, ['DOGE']).map(c => c.toUpperCase()),
+  COIN_EDGE_MULTIPLIERS: parseCoinMultipliers(process.env.COIN_EDGE_MULTIPLIERS, { BTC: 0.75 }),
   SLOT_DURATION: parseInt(process.env.SLOT_DURATION) || 900, // 15 min
 
   // Strategy thresholds
@@ -73,7 +90,7 @@ const config = {
   MAX_TOTAL_OPEN_POSITIONS: parseInt(process.env.MAX_TOTAL_OPEN_POSITIONS) || 10,
   MAX_ACCOUNT_RISK_PCT: Number.isFinite(parseFloat(process.env.MAX_ACCOUNT_RISK_PCT))
     ? parseFloat(process.env.MAX_ACCOUNT_RISK_PCT)
-    : 0.35,
+    : 0.30,
 };
 
 // Express + Socket.io

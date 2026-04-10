@@ -23,7 +23,8 @@ class RiskManager extends BaseSkill {
     this.maxOpenPositions = 10;
     this.maxPerContract = 1;
     this.maxPositionSize = 1.5;
-    this.maxAccountRiskPct = 0.35;
+    this.maxAccountRiskPct = 0.30;
+    this.disabledCoins = new Set(['DOGE']);
   }
 
   async initialize(context) {
@@ -33,7 +34,11 @@ class RiskManager extends BaseSkill {
     this.maxPositionSize = Math.min(1.5, context.config.MAX_POSITION_SIZE || 1.5);
     this.maxAccountRiskPct = Number.isFinite(context.config.MAX_ACCOUNT_RISK_PCT)
       ? context.config.MAX_ACCOUNT_RISK_PCT
-      : 0.35;
+      : 0.30;
+    this.disabledCoins = new Set(
+      (Array.isArray(context.config.DISABLED_COINS) ? context.config.DISABLED_COINS : ['DOGE'])
+        .map(c => String(c).toUpperCase())
+    );
   }
 
   async handleTask(task) {
@@ -83,6 +88,11 @@ class RiskManager extends BaseSkill {
   }
 
   _checkSignal(signal, state) {
+    const ticker = String(signal.ticker || '');
+    if (ticker.startsWith('KXDOGE') || this.disabledCoins.has('DOGE')) {
+      if (ticker.startsWith('KXDOGE')) return { approved: false, reason: 'disabled_coin' };
+    }
+
     // Check total position limits (pending + open)
     const totalExposure = state.openPositions.length + state.pendingOrders.length;
     if (totalExposure >= this.maxOpenPositions) {

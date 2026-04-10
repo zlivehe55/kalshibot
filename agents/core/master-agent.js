@@ -546,7 +546,7 @@ class MasterAgent extends EventEmitter {
     const startBalance = state.startingBalance > 0 ? state.startingBalance : state.balance.total;
     if (!(startBalance > 0)) return false;
 
-    const budgetPct = Number.isFinite(this.config.MAX_ACCOUNT_RISK_PCT) ? this.config.MAX_ACCOUNT_RISK_PCT : 0.35;
+    const budgetPct = Number.isFinite(this.config.MAX_ACCOUNT_RISK_PCT) ? this.config.MAX_ACCOUNT_RISK_PCT : 0.30;
     const riskBudget = startBalance * budgetPct;
     const realizedLoss = Math.max(0, -(state.stats.totalPnL || 0));
     if (realizedLoss < riskBudget) return false;

@@ -260,7 +260,7 @@ function updateMarkets(markets) {
   el('market-count').textContent = markets.length;
 
   if (markets.length === 0) {
-    body.innerHTML = '<tr><td colspan="6" class="empty-state">No active markets</td></tr>';
+    body.innerHTML = '<tr><td colspan="7" class="empty-state">No active markets</td></tr>';
     return;
   }
 
@@ -273,6 +273,7 @@ function updateMarkets(markets) {
 
     return `
       <tr>
+        <td style="color: var(--green)">${coinFromTicker(m.ticker)}</td>
         <td style="color: var(--accent)">${m.ticker.split('-').slice(-2).join('-')}</td>
         <td>${cents(m.yesBid)} / ${cents(m.yesAsk)}</td>
         <td>${cents(m.noBid)} / ${cents(m.noAsk)}</td>
@@ -317,11 +318,11 @@ function updateTradeLog(log) {
       typeClass = entry.action || 'WIN';
       const entryPrice = entry.entryPriceCents ?? '--';
       const exitPrice = entry.exitPriceCents ?? '--';
-      msg = `${shortTicker(entry.ticker)} ${entry.side?.toUpperCase()} x${entry.contracts} | ${entryPrice}¢ → ${exitPrice}¢ | P&L: ${entry.pnl >= 0 ? '+' : ''}$${entry.pnl.toFixed(2)}`;
+      msg = `[${entry.coin || coinFromTicker(entry.ticker)}] ${shortTicker(entry.ticker)} ${entry.side?.toUpperCase()} x${entry.contracts} | ${entryPrice}¢ → ${exitPrice}¢ | P&L: ${entry.pnl >= 0 ? '+' : ''}$${entry.pnl.toFixed(2)}`;
     } else if (entry.type === 'TRADE' && entry.action === 'SELL') {
       const entryPrice = entry.entryPriceCents ?? '--';
       const exitPrice = entry.exitPriceCents ?? entry.price ?? '--';
-      msg = `${shortTicker(entry.ticker)} ${entry.side?.toUpperCase()} x${entry.contracts || 0} | ${entryPrice}¢ → ${exitPrice}¢ | P&L: ${entry.pnl >= 0 ? '+' : ''}$${entry.pnl.toFixed(2)}`;
+      msg = `[${entry.coin || coinFromTicker(entry.ticker)}] ${shortTicker(entry.ticker)} ${entry.side?.toUpperCase()} x${entry.contracts || 0} | ${entryPrice}¢ → ${exitPrice}¢ | P&L: ${entry.pnl >= 0 ? '+' : ''}$${entry.pnl.toFixed(2)}`;
     } else {
       msg = entry.message || '';
     }
@@ -466,6 +467,16 @@ function shortTicker(ticker) {
   if (!ticker) return '';
   const parts = ticker.split('-');
   return parts.length > 2 ? parts.slice(-2).join('-') : ticker;
+}
+
+function coinFromTicker(ticker) {
+  if (!ticker) return 'UNK';
+  if (ticker.startsWith('KXBTC')) return 'BTC';
+  if (ticker.startsWith('KXETH')) return 'ETH';
+  if (ticker.startsWith('KXSOL')) return 'SOL';
+  if (ticker.startsWith('KXXRP')) return 'XRP';
+  if (ticker.startsWith('KXDOGE')) return 'DOGE';
+  return 'UNK';
 }
 
 function formatTime(seconds) {
