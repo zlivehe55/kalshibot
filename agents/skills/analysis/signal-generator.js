@@ -32,6 +32,8 @@ class SignalGenerator extends BaseSkill {
     this.kellyFraction = 0.25;
     this.useKelly = true;
     this.maxPositionSize = 25;
+    this.hardMaxPositionSize = 1.5;
+    this.maxEdgeAcceptance = 30;
     this.tradingWindow = 4 * 60 * 1000;
     this.minContractPrice = 0.48;
     this.maxContractPrice = 0.88;
@@ -46,6 +48,8 @@ class SignalGenerator extends BaseSkill {
     this.kellyFraction = config.KELLY_FRACTION || 0.25;
     this.useKelly = config.USE_KELLY_SIZING !== false;
     this.maxPositionSize = config.MAX_POSITION_SIZE || 25;
+    this.hardMaxPositionSize = Math.min(1.5, this.maxPositionSize);
+    this.maxEdgeAcceptance = 30;
     this.tradingWindow = (config.TRADING_WINDOW || 4) * 60 * 1000;
     this.minContractPrice = (config.MIN_CONTRACT_PRICE || 48) / 100;
     this.maxContractPrice = (config.MAX_CONTRACT_PRICE || 88) / 100;
@@ -57,8 +61,8 @@ class SignalGenerator extends BaseSkill {
     switch (task.action) {
       case 'generate-signals': {
         const markets = task.params?.markets || state.activeMarkets;
-        const signals = this._generateSignals(markets, state);
-        return { signals };
+        const { signals, stats } = this._generateSignals(markets, state);
+        return { signals, signalStats: stats };
       }
 
       case 'generate-take-profit-signals': {
@@ -72,36 +76,105 @@ class SignalGenerator extends BaseSkill {
     }
   }
 
+  _edgeBucket(edge) {
+    if (!Number.isFinite(edge)) return 'unknown';
+    if (edge < 15) return '0-15';
+    if (edge < 30) return '15-30';
+    return '30+';
+  }
+
+  _isDisabledBucket(state, signalType, edge) {
+    const bucket = this._edgeBucket(edge);
+    const key = `${signalType}|${bucket}`;
+    return !!state?.stats?.edgeBucketStats?.[key]?.disabled;
+  }
+
+  _contractsForPrice(priceDecimal, desiredDollars) {
+    if (!Number.isFinite(priceDecimal) || priceDecimal <= 0) return 0;
+    const maxByHardCap = Math.min(Math.floor(this.hardMaxPositionSize / priceDecimal), 3);
+    if (maxByHardCap <= 0) return 0;
+    const fromDesired = Math.floor(desiredDollars / priceDecimal);
+    return Math.max(1, Math.min(fromDesired, maxByHardCap));
+  }
+
   _generateSignals(kalshiMarkets, state) {
     const signals = [];
+    const stats = {
+      totalMarkets: kalshiMarkets.length,
+      consideredMarkets: 0,
+      skippedWindow: 0,
+      skippedClosingSoon: 0,
+      skippedMissingOpenPrice: 0,
+      skippedMissingQuotes: 0,
+      skippedPriceRange: 0,
+      skippedEdgeTooHigh: 0,
+      skippedDisabledBucket: 0,
+      bestEdgeYes: null,
+      bestEdgeNo: null,
+      bestPolyEdgeYes: null,
+      generatedSignals: 0,
+      tradingWindowMin: Math.round(this.tradingWindow / 60000),
+      minDivergence: this.minDivergence,
+      minEdge: this.minEdge,
+      adaptiveCap: 0,
+    };
+    const adaptivePositionCap = this.hardMaxPositionSize;
+    stats.adaptiveCap = adaptivePositionCap;
     const now = Date.now();
-    const btcPrice = state.btcPrice.binance;
-    if (!btcPrice) return signals;
-
     const probModel = this.context.registry.get('probability-model');
     const trendSkill = this.context.registry.get('trend-analysis');
     const polySkill = this.context.registry.get('polymarket-price-feed');
-    const binanceFeed = this.context.registry.get('binance-price-feed').getFeed();
+    const binanceSkill = this.context.registry.get('binance-price-feed');
 
     for (const market of kalshiMarkets) {
+      stats.consideredMarkets++;
       const timeRemaining = market.closeTime - now;
       const totalDuration = market.closeTime - market.openTime;
       const timeSinceOpen = now - market.openTime;
 
-      if (timeSinceOpen > this.tradingWindow || timeRemaining < 30000) continue;
+      if (timeSinceOpen > this.tradingWindow) {
+        stats.skippedWindow++;
+        continue;
+      }
+      if (timeRemaining < 30000) {
+        stats.skippedClosingSoon++;
+        continue;
+      }
 
       const openPrice = state.marketOpenPrices[market.ticker];
-      if (!openPrice) continue;
-      if (!market.yesAsk || !market.noAsk) continue;
+      if (!openPrice) {
+        stats.skippedMissingOpenPrice++;
+        continue;
+      }
+      if (!market.yesAsk || !market.noAsk) {
+        stats.skippedMissingQuotes++;
+        continue;
+      }
 
       const yesInRange = market.yesAsk >= this.minContractPrice && market.yesAsk <= this.maxContractPrice;
       const noInRange = market.noAsk >= this.minContractPrice && market.noAsk <= this.maxContractPrice;
+      if (!yesInRange && !noInRange) {
+        stats.skippedPriceRange++;
+      }
+
+      const coin = state.getCoinFromTicker ? state.getCoinFromTicker(market.ticker).toLowerCase() : 'btc';
+      const spotPrice = state.getSpotPriceForTicker ? state.getSpotPriceForTicker(market.ticker) : state.btcPrice.binance;
+      if (!spotPrice) {
+        stats.reason = 'no_spot_price';
+        continue;
+      }
+      const spotSymbol = state.getSpotFeedSymbolForTicker
+        ? state.getSpotFeedSymbolForTicker(market.ticker)
+        : 'btcusdt';
+      const binanceFeed = binanceSkill.getFeedBySymbol
+        ? binanceSkill.getFeedBySymbol(spotSymbol)
+        : binanceSkill.getFeed();
 
       // Get Polymarket cross-reference
-      const poly = polySkill.getCachedPrice(market.closeTime);
+      const poly = polySkill.getCachedPrice(market.closeTime, coin);
 
       // Calculate model probability
-      const prob = probModel.calculateImpliedProbability(btcPrice, openPrice, timeRemaining, totalDuration, binanceFeed);
+      const prob = probModel.calculateImpliedProbability(spotPrice, openPrice, timeRemaining, totalDuration, binanceFeed);
 
       // Get trend data
       const trendData = trendSkill.getIndicator() ? trendSkill.getIndicator().getTrend() : {};
@@ -124,6 +197,8 @@ class SignalGenerator extends BaseSkill {
       const kalshiYesImplied = market.yesAsk;
       const modelEdgeYes = (prob.probUp - kalshiYesImplied) * 100;
       const modelEdgeNo = (prob.probDown - market.noAsk) * 100;
+      if (stats.bestEdgeYes === null || modelEdgeYes > stats.bestEdgeYes) stats.bestEdgeYes = modelEdgeYes;
+      if (stats.bestEdgeNo === null || modelEdgeNo > stats.bestEdgeNo) stats.bestEdgeNo = modelEdgeNo;
 
       const trendMultYes = trendSkill.getTrendMultiplier('yes');
       const trendMultNo = trendSkill.getTrendMultiplier('no');
@@ -132,9 +207,18 @@ class SignalGenerator extends BaseSkill {
       const currentTrend = trendData.trend || 'NEUTRAL';
 
       if (adjustedEdgeYes > this.minDivergence && yesInRange) {
+        if (adjustedEdgeYes > this.maxEdgeAcceptance) {
+          stats.skippedEdgeTooHigh++;
+          continue;
+        }
+        if (this._isDisabledBucket(state, 'DIRECTIONAL_YES', adjustedEdgeYes)) {
+          stats.skippedDisabledBucket++;
+          continue;
+        }
         const size = this.useKelly ? probModel.kellySize(adjustedEdgeYes / 100, prob.probUp, this.kellyFraction) : 1;
-        const positionDollars = Math.min(size * state.balance.available, this.maxPositionSize, state.balance.available);
-        const contracts = Math.max(1, Math.floor(positionDollars / market.yesAsk));
+        const positionDollars = Math.min(size * state.balance.available, adaptivePositionCap, state.balance.available);
+        const contracts = this._contractsForPrice(market.yesAsk, positionDollars);
+        if (contracts <= 0) continue;
 
         signals.push({
           type: 'DIRECTIONAL_YES', ticker: market.ticker, side: 'yes',
@@ -147,9 +231,18 @@ class SignalGenerator extends BaseSkill {
       }
 
       if (adjustedEdgeNo > this.minDivergence && noInRange) {
+        if (adjustedEdgeNo > this.maxEdgeAcceptance) {
+          stats.skippedEdgeTooHigh++;
+          continue;
+        }
+        if (this._isDisabledBucket(state, 'DIRECTIONAL_NO', adjustedEdgeNo)) {
+          stats.skippedDisabledBucket++;
+          continue;
+        }
         const size = this.useKelly ? probModel.kellySize(adjustedEdgeNo / 100, prob.probDown, this.kellyFraction) : 1;
-        const positionDollars = Math.min(size * state.balance.available, this.maxPositionSize, state.balance.available);
-        const contracts = Math.max(1, Math.floor(positionDollars / market.noAsk));
+        const positionDollars = Math.min(size * state.balance.available, adaptivePositionCap, state.balance.available);
+        const contracts = this._contractsForPrice(market.noAsk, positionDollars);
+        if (contracts <= 0) continue;
 
         signals.push({
           type: 'DIRECTIONAL_NO', ticker: market.ticker, side: 'no',
@@ -164,10 +257,20 @@ class SignalGenerator extends BaseSkill {
       // ===== STRATEGY 2: POLYMARKET ARBITRAGE =====
       if (poly) {
         const polyEdgeYes = (poly.upMid - market.yesAsk) * 100;
+        if (stats.bestPolyEdgeYes === null || polyEdgeYes > stats.bestPolyEdgeYes) stats.bestPolyEdgeYes = polyEdgeYes;
         if (polyEdgeYes > this.minEdge * 1.5 && yesInRange) {
+          if (polyEdgeYes > this.maxEdgeAcceptance) {
+            stats.skippedEdgeTooHigh++;
+            continue;
+          }
+          if (this._isDisabledBucket(state, 'POLY_ARB_YES', polyEdgeYes)) {
+            stats.skippedDisabledBucket++;
+            continue;
+          }
           const size = this.useKelly ? probModel.kellySize(polyEdgeYes / 100, poly.upMid, this.kellyFraction) : 1;
-          const positionDollars = Math.min(size * state.balance.available, this.maxPositionSize);
-          const contracts = Math.max(1, Math.floor(positionDollars / market.yesAsk));
+          const positionDollars = Math.min(size * state.balance.available, adaptivePositionCap, state.balance.available);
+          const contracts = this._contractsForPrice(market.yesAsk, positionDollars);
+          if (contracts <= 0) continue;
 
           signals.push({
             type: 'POLY_ARB_YES', ticker: market.ticker, side: 'yes',
@@ -184,8 +287,9 @@ class SignalGenerator extends BaseSkill {
       const combinedCost = market.yesAsk + market.noAsk;
       if (combinedCost < 0.98) {
         const guaranteedProfit = (1 - combinedCost) * 100;
-        const positionDollars = Math.min(this.maxPositionSize / 2, state.balance.available / 2);
-        const contracts = Math.max(1, Math.floor(positionDollars / Math.max(market.yesAsk, market.noAsk)));
+        const positionDollars = Math.min(adaptivePositionCap, state.balance.available);
+        const contracts = this._contractsForPrice(Math.max(market.yesAsk, market.noAsk), positionDollars);
+        if (contracts <= 0) continue;
 
         signals.push({
           type: 'DUAL_SIDE_YES', ticker: market.ticker, side: 'yes',
@@ -206,13 +310,17 @@ class SignalGenerator extends BaseSkill {
     }
 
     signals.sort((a, b) => b.edge - a.edge);
-    return signals;
+    stats.generatedSignals = signals.length;
+    return { signals, stats };
   }
 
   _generateTakeProfitSignals(openPositions, kalshiMarkets) {
     const signals = [];
 
     for (const pos of openPositions) {
+      const filledContracts = Number(pos.filledContracts || 0);
+      if (!Number.isFinite(filledContracts) || filledContracts <= 0) continue;
+
       const market = kalshiMarkets.find(m => m.ticker === pos.ticker);
       if (!market) continue;
 
@@ -234,7 +342,7 @@ class SignalGenerator extends BaseSkill {
           type: 'TAKE_PROFIT', orderId: pos.orderId, ticker: pos.ticker,
           side: pos.side, sellPriceCents: Math.round(currentValue * 100),
           sellPriceDecimal: currentValue,
-          contracts: pos.filledContracts || pos.contracts,
+          contracts: filledContracts,
           profitPct,
           reason: `Take profit: bought@${(entryPrice * 100).toFixed(0)}c sell@${(currentValue * 100).toFixed(0)}c (+${profitPct.toFixed(1)}%)`,
         });

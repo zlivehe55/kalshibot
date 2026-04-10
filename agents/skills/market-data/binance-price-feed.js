@@ -20,39 +20,58 @@ class BinancePriceFeed extends BaseSkill {
       dependencies: ['state-manager'],
     });
 
-    this.feed = null;
+    this.feeds = new Map();
+    this.primarySymbol = 'btcusdt';
   }
 
   async initialize(context) {
     await super.initialize(context);
     const stateManager = context.registry.get('state-manager');
-    this.feed = new BinanceFeed(stateManager.botState, 'btcusdt');
+    const configured = Array.isArray(context.config.SUPPORTED_SPOT_SYMBOLS)
+      ? context.config.SUPPORTED_SPOT_SYMBOLS
+      : [];
+    const symbols = configured.length > 0
+      ? configured.map(s => String(s).toLowerCase())
+      : ['btcusdt', 'ethusdt', 'solusdt', 'xrpusdt', 'dogeusdt'];
+
+    for (const symbol of symbols) {
+      this.feeds.set(symbol, new BinanceFeed(stateManager.botState, symbol));
+    }
   }
 
   async start() {
     await super.start();
-    this.feed.start();
+    for (const feed of this.feeds.values()) {
+      feed.start();
+    }
   }
 
   async handleTask(task) {
     switch (task.action) {
       case 'get-binance-price': {
         const stateManager = this.context.registry.get('state-manager');
+        const symbol = String(task.params?.symbol || this.primarySymbol).toLowerCase();
+        const spot = stateManager.botState.spotPrices?.[symbol] || null;
         return {
-          price: stateManager.botState.btcPrice.binance,
-          bid: stateManager.botState.btcPrice.binanceBid,
-          ask: stateManager.botState.btcPrice.binanceAsk,
-          lastUpdate: stateManager.botState.btcPrice.lastUpdate,
+          symbol,
+          price: spot?.mid || stateManager.botState.btcPrice.binance,
+          bid: spot?.bid || stateManager.botState.btcPrice.binanceBid,
+          ask: spot?.ask || stateManager.botState.btcPrice.binanceAsk,
+          lastUpdate: spot?.lastUpdate || stateManager.botState.btcPrice.lastUpdate,
         };
       }
 
       case 'get-volatility': {
         const windowSeconds = task.params?.windowSeconds || 300;
-        return { volatility: this.feed.getRecentVolatility(windowSeconds) };
+        const symbol = String(task.params?.symbol || this.primarySymbol).toLowerCase();
+        const feed = this.feeds.get(symbol) || this.feeds.get(this.primarySymbol);
+        return { symbol, volatility: feed ? feed.getRecentVolatility(windowSeconds) : 0.0015 };
       }
 
       case 'get-price-history': {
-        return { history: this.feed.priceHistory };
+        const symbol = String(task.params?.symbol || this.primarySymbol).toLowerCase();
+        const feed = this.feeds.get(symbol) || this.feeds.get(this.primarySymbol);
+        return { symbol, history: feed ? feed.priceHistory : [] };
       }
 
       default:
@@ -64,11 +83,18 @@ class BinancePriceFeed extends BaseSkill {
    * Direct access to the underlying feed (for skills that need it).
    */
   getFeed() {
-    return this.feed;
+    return this.feeds.get(this.primarySymbol) || null;
+  }
+
+  getFeedBySymbol(symbol) {
+    const key = String(symbol || this.primarySymbol).toLowerCase();
+    return this.feeds.get(key) || this.getFeed();
   }
 
   async stop() {
-    if (this.feed) this.feed.stop();
+    for (const feed of this.feeds.values()) {
+      feed.stop();
+    }
     await super.stop();
   }
 }

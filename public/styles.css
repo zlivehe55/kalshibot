@@ -186,6 +186,12 @@ body {
   border-bottom: 1px solid var(--border);
 }
 
+.intent-badges {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .panel-title {
   font-size: 10px;
   letter-spacing: 2px;
@@ -320,6 +326,24 @@ body {
   color: var(--red);
   background: rgba(255, 23, 68, 0.1);
   border: 1px solid rgba(255, 23, 68, 0.2);
+}
+
+.status-badge.quotes_live {
+  color: var(--green);
+  background: rgba(0, 230, 118, 0.1);
+  border: 1px solid rgba(0, 230, 118, 0.2);
+}
+
+.status-badge.waiting_quotes {
+  color: var(--yellow);
+  background: rgba(255, 234, 0, 0.1);
+  border: 1px solid rgba(255, 234, 0, 0.2);
+}
+
+.status-badge.quotes_unknown {
+  color: var(--text-dim);
+  background: rgba(107, 111, 133, 0.1);
+  border: 1px solid rgba(107, 111, 133, 0.2);
 }
 
 @keyframes pulse {
@@ -462,6 +486,16 @@ body {
 
 .log-entry:hover {
   background: rgba(255, 255, 255, 0.02);
+}
+
+.log-entry.trade-win {
+  background: rgba(0, 230, 118, 0.06);
+  border: 1px solid rgba(0, 230, 118, 0.15);
+}
+
+.log-entry.trade-loss {
+  background: rgba(255, 23, 68, 0.06);
+  border: 1px solid rgba(255, 23, 68, 0.15);
 }
 
 .log-time {

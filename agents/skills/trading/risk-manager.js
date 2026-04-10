@@ -22,14 +22,18 @@ class RiskManager extends BaseSkill {
 
     this.maxOpenPositions = 10;
     this.maxPerContract = 1;
-    this.maxPositionSize = 25;
+    this.maxPositionSize = 1.5;
+    this.maxAccountRiskPct = 0.35;
   }
 
   async initialize(context) {
     await super.initialize(context);
     this.maxOpenPositions = context.config.MAX_TOTAL_OPEN_POSITIONS || 10;
     this.maxPerContract = context.config.MAX_POSITIONS_PER_CONTRACT || 1;
-    this.maxPositionSize = context.config.MAX_POSITION_SIZE || 25;
+    this.maxPositionSize = Math.min(1.5, context.config.MAX_POSITION_SIZE || 1.5);
+    this.maxAccountRiskPct = Number.isFinite(context.config.MAX_ACCOUNT_RISK_PCT)
+      ? context.config.MAX_ACCOUNT_RISK_PCT
+      : 0.35;
   }
 
   async handleTask(task) {
@@ -90,20 +94,47 @@ class RiskManager extends BaseSkill {
       ...state.openPositions.filter(p => p.ticker === signal.ticker),
       ...state.pendingOrders.filter(p => p.ticker === signal.ticker),
     ];
-    if (existingOnTicker.length >= this.maxPerContract) {
-      return { approved: false, reason: 'per_contract_cap' };
+    if (existingOnTicker.length >= 1) {
+      return { approved: false, reason: 'one_position_per_ticker' };
     }
 
     // Check balance
     const cost = signal.priceDecimal * signal.contracts;
+    if (cost > this.maxPositionSize) {
+      return { approved: false, reason: 'max_position_size' };
+    }
     if (cost > state.balance.available) {
       return { approved: false, reason: 'insufficient_balance' };
     }
 
-    // Check cumulative ticker exposure
-    const existingCost = existingOnTicker.reduce((sum, p) => sum + (p.totalCost || p.reservedCost || 0), 0);
-    if (existingCost + cost > this.maxPositionSize * 1.5) {
+    // Strict cumulative ticker exposure cap (no buffer above max position size)
+    const existingCost = existingOnTicker.reduce((sum, p) => {
+      if (Number.isFinite(p.totalCost)) return sum + p.totalCost;
+      if (Number.isFinite(p.reservedCost)) return sum + p.reservedCost;
+      if (Number.isFinite(p.priceDecimal) && Number.isFinite(p.filledContracts)) return sum + (p.priceDecimal * p.filledContracts);
+      if (Number.isFinite(p.priceDecimal) && Number.isFinite(p.contracts)) return sum + (p.priceDecimal * p.contracts);
+      return sum;
+    }, 0);
+    if (existingCost + cost > this.maxPositionSize) {
       return { approved: false, reason: 'ticker_exposure_cap' };
+    }
+
+    // Global account risk budget: stop taking risk beyond N% of starting balance.
+    const startBalance = state.startingBalance > 0 ? state.startingBalance : state.balance.total;
+    const riskBudget = startBalance * this.maxAccountRiskPct;
+    const realizedLoss = Math.max(0, -(state.stats.totalPnL || 0));
+    const openRisk = [
+      ...state.openPositions,
+      ...state.pendingOrders,
+    ].reduce((sum, p) => {
+      if (Number.isFinite(p.totalCost)) return sum + p.totalCost;
+      if (Number.isFinite(p.reservedCost)) return sum + p.reservedCost;
+      if (Number.isFinite(p.priceDecimal) && Number.isFinite(p.filledContracts)) return sum + (p.priceDecimal * p.filledContracts);
+      if (Number.isFinite(p.priceDecimal) && Number.isFinite(p.contracts)) return sum + (p.priceDecimal * p.contracts);
+      return sum;
+    }, 0);
+    if ((realizedLoss + openRisk + cost) > riskBudget) {
+      return { approved: false, reason: 'account_risk_budget' };
     }
 
     return { approved: true, cost, existingExposure: existingCost };

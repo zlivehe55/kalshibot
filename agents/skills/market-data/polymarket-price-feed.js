@@ -38,15 +38,17 @@ class PolymarketPriceFeed extends BaseSkill {
     switch (task.action) {
       case 'get-polymarket-price': {
         const closeTime = task.params?.closeTime;
+        const coin = task.params?.coin || 'btc';
         if (!closeTime) throw new Error('closeTime required');
-        const price = await this.feed.fetchPrice(closeTime);
+        const price = await this.feed.fetchPrice(closeTime, coin);
         return { price };
       }
 
       case 'get-cached-polymarket-price': {
         const closeTime = task.params?.closeTime;
+        const coin = task.params?.coin || 'btc';
         if (!closeTime) throw new Error('closeTime required');
-        return { price: this.feed.getCachedPrice(closeTime) };
+        return { price: this.feed.getCachedPrice(closeTime, coin) };
       }
 
       default:
@@ -57,8 +59,8 @@ class PolymarketPriceFeed extends BaseSkill {
   /**
    * Direct access — used by SignalGenerator for cached price lookups.
    */
-  getCachedPrice(closeTimeMs) {
-    return this.feed ? this.feed.getCachedPrice(closeTimeMs) : null;
+  getCachedPrice(closeTimeMs, coin = 'btc') {
+    return this.feed ? this.feed.getCachedPrice(closeTimeMs, coin) : null;
   }
 
   async stop() {

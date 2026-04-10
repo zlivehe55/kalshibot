@@ -10,6 +10,28 @@
 const BaseSkill = require('../../core/base-skill');
 const OrderManager = require('../../../bot/order-manager');
 
+function parseNumeric(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function getOrderFillCount(order) {
+  if (order && order.fill_count_fp != null) return parseNumeric(order.fill_count_fp);
+  if (order && order.fill_count != null) return parseNumeric(order.fill_count);
+  return 0;
+}
+
+function getOrderCostCents(order) {
+  const makerCost = parseNumeric(order?.maker_fill_cost_dollars);
+  const makerFees = parseNumeric(order?.maker_fees_dollars);
+  const takerCost = parseNumeric(order?.taker_fill_cost_dollars);
+  const takerFees = parseNumeric(order?.taker_fees_dollars);
+  if (makerCost || makerFees || takerCost || takerFees) {
+    return Math.round((makerCost + makerFees + takerCost + takerFees) * 100);
+  }
+  return parseNumeric(order?.taker_fill_cost) + parseNumeric(order?.taker_fees);
+}
+
 class OrderExecutor extends BaseSkill {
   constructor() {
     super({
@@ -21,7 +43,11 @@ class OrderExecutor extends BaseSkill {
     });
 
     this.orderManager = null;
-    this.maxPositionSize = 25;
+    this.maxPositionSize = 1.5;
+    this.orderCooldownMs = 15000;
+    this._lastOrderByTicker = new Map();
+    this._orderingTickers = new Set();
+    this._orderTickerLocks = new Map();
   }
 
   async initialize(context) {
@@ -35,10 +61,15 @@ class OrderExecutor extends BaseSkill {
       kalshiSkill.getClient(),
       stateManager.botState,
       analyticsSkill.getDB(),
-      context.config
+      {
+        ...context.config,
+        onPositionPromoted: ({ orderId }) => this._releaseTickerLockByOrder(orderId),
+        onOrderFinalized: ({ orderId }) => this._releaseTickerLockByOrder(orderId),
+      }
     );
 
-    this.maxPositionSize = context.config.MAX_POSITION_SIZE || 25;
+    this.maxPositionSize = Math.min(1.5, context.config.MAX_POSITION_SIZE || 1.5);
+    this.orderCooldownMs = context.config.ORDER_COOLDOWN_MS || 15000;
   }
 
   async start() {
@@ -57,11 +88,43 @@ class OrderExecutor extends BaseSkill {
         const signals = task.params?.approvedSignals || [];
         const results = [];
         let executedCount = 0;
-        const maxPerScan = 2;
+        const maxPerScan = 1;
         let lastTicker = null;
+
+        // Global safety: if anything is pending, do not place new orders.
+        if (state.pendingOrders.length > 0) {
+          return {
+            executedSignals: signals.map(s => ({
+              signal: s.ticker,
+              status: 'blocked',
+              reason: 'pending_order_exists',
+            })),
+            totalExecuted: 0,
+          };
+        }
 
         for (const signal of signals) {
           if (executedCount >= maxPerScan) break;
+
+          if (this._orderingTickers.has(signal.ticker)) {
+            results.push({
+              signal: signal.ticker,
+              status: 'blocked',
+              reason: 'ticker_order_in_flight',
+            });
+            continue;
+          }
+
+          const now = Date.now();
+          const lastOrderAt = this._lastOrderByTicker.get(signal.ticker) || 0;
+          if (now - lastOrderAt < this.orderCooldownMs) {
+            results.push({
+              signal: signal.ticker,
+              status: 'blocked',
+              reason: `cooldown_active_${Math.ceil((this.orderCooldownMs - (now - lastOrderAt)) / 1000)}s`,
+            });
+            continue;
+          }
 
           // Final risk check before execution
           const riskCheck = await riskSkill.execute({
@@ -76,9 +139,16 @@ class OrderExecutor extends BaseSkill {
 
           if (lastTicker === signal.ticker) await sleep(100);
 
+          this._orderingTickers.add(signal.ticker);
           const result = await this._executeSignal(signal, state, kalshiSkill, analyticsSkill);
+          if (result.status !== 'executed') {
+            this._orderingTickers.delete(signal.ticker);
+          }
           results.push(result);
-          if (result.status === 'executed') executedCount++;
+          if (result.status === 'executed') {
+            executedCount++;
+            this._lastOrderByTicker.set(signal.ticker, Date.now());
+          }
           lastTicker = signal.ticker;
         }
 
@@ -109,13 +179,36 @@ class OrderExecutor extends BaseSkill {
   }
 
   async _executeSignal(signal, state, kalshiSkill, analyticsSkill) {
-    const cost = signal.priceDecimal * signal.contracts;
+    const maxContracts = Math.min(Math.floor(this.maxPositionSize / signal.priceDecimal), 3);
+    if (maxContracts <= 0) {
+      return { signal: signal.ticker, status: 'blocked', reason: 'price_above_hard_cap' };
+    }
 
-    // Log signal
-    const signalId = analyticsSkill.logSignalDirect(signal, true);
+    const executionSignal = {
+      ...signal,
+      contracts: Math.max(1, Math.min(signal.contracts, maxContracts)),
+    };
+    const cost = executionSignal.priceDecimal * executionSignal.contracts;
 
-    // Snapshot market state
-    const market = state.activeMarkets.find(m => m.ticker === signal.ticker);
+    if (cost > this.maxPositionSize) {
+      return {
+        signal: executionSignal.ticker,
+        status: 'blocked',
+        reason: `max_position_size_exceeded (${cost.toFixed(2)} > ${this.maxPositionSize.toFixed(2)})`,
+      };
+    }
+
+    const sameTickerExposure = [
+      ...state.pendingOrders.filter(p => p.ticker === executionSignal.ticker),
+      ...state.openPositions.filter(p => p.ticker === executionSignal.ticker),
+    ];
+    if (sameTickerExposure.length > 0) {
+      return { signal: executionSignal.ticker, status: 'blocked', reason: 'one_position_per_ticker' };
+    }
+
+    const signalId = analyticsSkill.logSignalDirect(executionSignal, true);
+
+    const market = state.activeMarkets.find(m => m.ticker === executionSignal.ticker);
     if (market) {
       analyticsSkill.logMarketSnapshotDirect(market, state.btcPrice.binance, 'pre_execution');
     }
@@ -123,88 +216,110 @@ class OrderExecutor extends BaseSkill {
     try {
       const clientOrderId = `bot-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`;
       const orderData = {
-        ticker: signal.ticker,
+        ticker: executionSignal.ticker,
         action: 'buy',
-        side: signal.side,
-        count: signal.contracts,
+        side: executionSignal.side,
+        count: executionSignal.contracts,
         type: 'limit',
         client_order_id: clientOrderId,
       };
 
-      if (signal.side === 'yes') orderData.yes_price = signal.priceCents;
-      else orderData.no_price = signal.priceCents;
+      if (executionSignal.side === 'yes') orderData.yes_price = executionSignal.priceCents;
+      else orderData.no_price = executionSignal.priceCents;
 
       state.updateIntent({
         status: 'executing',
-        message: `Executing ${signal.type}...`,
-        action: `BUY ${signal.side.toUpperCase()} ${signal.ticker} x${signal.contracts} @ ${signal.priceCents}c`,
+        message: `Executing ${executionSignal.type}...`,
+        action: `BUY ${executionSignal.side.toUpperCase()} ${executionSignal.ticker} x${executionSignal.contracts} @ ${executionSignal.priceCents}c`,
       });
 
-      console.log(`[OrderExecutor] Executing: ${signal.type} ${signal.ticker} ${signal.side} x${signal.contracts} @ ${signal.priceCents}c | Edge: ${signal.edge.toFixed(1)}%`);
+      console.log(`[OrderExecutor] Executing: ${executionSignal.type} ${executionSignal.ticker} ${executionSignal.side} x${executionSignal.contracts} @ ${executionSignal.priceCents}c | Edge: ${executionSignal.edge.toFixed(1)}%`);
 
       const order = await kalshiSkill.getClient().placeOrder(orderData);
+      const fills = getOrderFillCount(order);
+      const costCents = getOrderCostCents(order);
 
-      console.log(`[OrderExecutor] Order ${order.order_id}: ${order.status} | Filled: ${order.fill_count || 0}/${signal.contracts}`);
+      console.log(`[OrderExecutor] Order ${order.order_id}: ${order.status} | Filled: ${fills}/${executionSignal.contracts}`);
 
-      // Log order
       analyticsSkill.logOrderDirect({
-        order_id: order.order_id, client_order_id: clientOrderId,
-        ticker: signal.ticker, side: signal.side, action: 'buy',
-        price_cents: signal.priceCents, count: signal.contracts,
-        status: order.status, fill_count: order.fill_count || 0,
-        taker_fill_cost: order.taker_fill_cost || 0,
-        taker_fees: order.taker_fees || 0, close_time: signal.closeTime,
+        order_id: order.order_id,
+        client_order_id: clientOrderId,
+        ticker: executionSignal.ticker,
+        side: executionSignal.side,
+        action: 'buy',
+        price_cents: executionSignal.priceCents,
+        count: executionSignal.contracts,
+        status: order.status,
+        fill_count: fills,
+        taker_fill_cost: costCents,
+        taker_fees: 0,
+        close_time: executionSignal.closeTime,
       }, signalId);
 
-      // Add to pending orders
       const pendingOrder = {
-        orderId: order.order_id, clientOrderId,
-        ticker: signal.ticker, signalType: signal.type,
-        side: signal.side, contracts: signal.contracts,
-        fillCount: order.fill_count || 0,
-        priceCents: signal.priceCents, priceDecimal: signal.priceDecimal,
-        reservedCost: cost, edge: signal.edge, modelProb: signal.modelProb,
-        reason: signal.reason, placedAt: Date.now(),
-        closeTime: signal.closeTime, orderStatus: order.status,
-        isDualSide: signal.isDualSide || false,
+        orderId: order.order_id,
+        clientOrderId,
+        ticker: executionSignal.ticker,
+        signalType: executionSignal.type,
+        side: executionSignal.side,
+        contracts: executionSignal.contracts,
+        fillCount: fills,
+        priceCents: executionSignal.priceCents,
+        priceDecimal: executionSignal.priceDecimal,
+        reservedCost: cost,
+        edge: executionSignal.edge,
+        modelProb: executionSignal.modelProb,
+        reason: executionSignal.reason,
+        placedAt: Date.now(),
+        closeTime: executionSignal.closeTime,
+        orderStatus: order.status,
+        isDualSide: executionSignal.isDualSide || false,
       };
 
+      this._orderTickerLocks.set(order.order_id, executionSignal.ticker);
       this.orderManager.addPendingOrder(pendingOrder);
 
-      // Deduct cost locally
       state.balance.available -= cost;
       if (state.balance.available < 0) state.balance.available = 0;
 
       state.stats.volumeTraded += cost;
-      state.stats.totalEdge += signal.edge;
+      state.stats.totalEdge += executionSignal.edge;
       state.stats.avgEdge = state.stats.totalEdge / (state.stats.totalTrades + state.openPositions.length || 1);
 
       state.logTrade({
-        type: 'TRADE', action: 'BUY', side: signal.side,
-        ticker: signal.ticker, contracts: signal.contracts,
-        price: signal.priceCents, edge: signal.edge,
-        signalType: signal.type, reason: signal.reason,
+        type: 'TRADE',
+        action: 'BUY',
+        side: executionSignal.side,
+        ticker: executionSignal.ticker,
+        contracts: executionSignal.contracts,
+        price: executionSignal.priceCents,
+        edge: executionSignal.edge,
+        signalType: executionSignal.type,
+        reason: executionSignal.reason,
       });
 
       state.emitStats();
 
-      // Schedule settlement check
-      const timeToSettle = signal.closeTime - Date.now() + 60000;
+      const timeToSettle = executionSignal.closeTime - Date.now() + 60000;
       if (timeToSettle > 0) {
         const positionManager = this.context.registry.get('position-manager');
         setTimeout(() => positionManager.settlePositionById(pendingOrder.orderId), timeToSettle);
       }
 
-      // Refresh balance
       await kalshiSkill.getClient().fetchBalance();
-
-      return { signal: signal.ticker, status: 'executed', orderId: order.order_id };
+      return { signal: executionSignal.ticker, status: 'executed', orderId: order.order_id };
     } catch (err) {
-      const detail = err.response
-        ? `${err.response.status} - ${JSON.stringify(err.response.data)}`
-        : err.message;
+      this._orderingTickers.delete(signal.ticker);
+      const detail = err.response ? `${err.response.status} - ${JSON.stringify(err.response.data)}` : err.message;
       return { signal: signal.ticker, status: 'error', error: detail };
     }
+  }
+
+  _releaseTickerLockByOrder(orderId) {
+    const ticker = this._orderTickerLocks.get(orderId);
+    if (!ticker) return;
+    this._orderTickerLocks.delete(orderId);
+    this._orderingTickers.delete(ticker);
   }
 
   async stop() {

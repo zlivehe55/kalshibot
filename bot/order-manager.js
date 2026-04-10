@@ -10,6 +10,31 @@
  *   OrderManager poll → stale timeout → cancels order, removes from pending
  */
 
+function parseNumeric(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function getOrderFillCount(order) {
+  // New API shape: fill_count_fp (string decimal); legacy: fill_count (integer)
+  if (order && order.fill_count_fp != null) return parseNumeric(order.fill_count_fp);
+  if (order && order.fill_count != null) return parseNumeric(order.fill_count);
+  return 0;
+}
+
+function getOrderCostCents(order) {
+  // New API shape reports dollars split by maker/taker.
+  const makerCost = parseNumeric(order?.maker_fill_cost_dollars);
+  const makerFees = parseNumeric(order?.maker_fees_dollars);
+  const takerCost = parseNumeric(order?.taker_fill_cost_dollars);
+  const takerFees = parseNumeric(order?.taker_fees_dollars);
+  if (makerCost || makerFees || takerCost || takerFees) {
+    return Math.round((makerCost + makerFees + takerCost + takerFees) * 100);
+  }
+  // Legacy fallback in cents.
+  return parseNumeric(order?.taker_fill_cost) + parseNumeric(order?.taker_fees);
+}
+
 class OrderManager {
   constructor(kalshi, state, db, config = {}) {
     this.kalshi = kalshi;
@@ -23,6 +48,10 @@ class OrderManager {
 
     this._interval = null;
     this._polling = false;
+    this._callbacks = {
+      onPositionPromoted: typeof config.onPositionPromoted === 'function' ? config.onPositionPromoted : null,
+      onOrderFinalized: typeof config.onOrderFinalized === 'function' ? config.onOrderFinalized : null,
+    };
   }
 
   start() {
@@ -78,7 +107,7 @@ class OrderManager {
     const kalshiOrder = await this.kalshi.getOrder(pendingOrder.orderId);
     if (!kalshiOrder) return;
 
-    const currentFills = kalshiOrder.fill_count || 0;
+    const currentFills = getOrderFillCount(kalshiOrder);
     const prevFills = pendingOrder.fillCount || 0;
     const status = kalshiOrder.status;
 
@@ -160,6 +189,13 @@ class OrderManager {
       };
 
       this.state.addPosition(position);
+      if (this._callbacks.onPositionPromoted) {
+        this._callbacks.onPositionPromoted({
+          orderId: pendingOrder.orderId,
+          ticker: pendingOrder.ticker,
+          side: pendingOrder.side,
+        });
+      }
 
       console.log(
         `[OrderMgr] Promoted to position: ${pendingOrder.ticker} ${pendingOrder.side} ` +
@@ -174,7 +210,8 @@ class OrderManager {
    * If fully cancelled with 0 fills, just clean up.
    */
   _finalizePendingOrder(pendingOrder, kalshiOrder) {
-    const fills = kalshiOrder.fill_count || 0;
+    const fills = getOrderFillCount(kalshiOrder);
+    const costCents = getOrderCostCents(kalshiOrder);
 
     // Update DB
     if (this.db) {
@@ -182,8 +219,8 @@ class OrderManager {
         pendingOrder.orderId,
         kalshiOrder.status,
         fills,
-        kalshiOrder.taker_fill_cost || 0,
-        kalshiOrder.taker_fees || 0
+        costCents,
+        0
       );
     }
 
@@ -194,6 +231,14 @@ class OrderManager {
 
     // Remove from pending
     this.state.removePendingOrder(pendingOrder.orderId);
+    if (this._callbacks.onOrderFinalized) {
+      this._callbacks.onOrderFinalized({
+        orderId: pendingOrder.orderId,
+        ticker: pendingOrder.ticker,
+        status: kalshiOrder.status,
+        fills,
+      });
+    }
 
     if (fills === 0) {
       console.log(
@@ -220,6 +265,14 @@ class OrderManager {
       }
 
       this.state.removePendingOrder(pendingOrder.orderId);
+      if (this._callbacks.onOrderFinalized) {
+        this._callbacks.onOrderFinalized({
+          orderId: pendingOrder.orderId,
+          ticker: pendingOrder.ticker,
+          status: 'canceled',
+          fills: 0,
+        });
+      }
 
       // Restore the reserved balance
       this.state.balance.available += pendingOrder.reservedCost || 0;

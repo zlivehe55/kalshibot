@@ -20,10 +20,15 @@ class AnalyticsRecorder extends BaseSkill {
       dependencies: [], // No dependencies
     });
 
-    this.db = new AnalyticsDB();
+    this.db = null;
   }
 
   async initialize(context) {
+    // Recreate DB on each bot start so stop/start cycles never reuse a closed handle.
+    if (this.db) {
+      try { this.db.close(); } catch (e) { /* ignore */ }
+    }
+    this.db = new AnalyticsDB();
     await super.initialize(context);
   }
 
@@ -77,7 +82,10 @@ class AnalyticsRecorder extends BaseSkill {
   }
 
   async stop() {
-    this.db.close();
+    if (this.db) {
+      this.db.close();
+      this.db = null;
+    }
     await super.stop();
   }
 }

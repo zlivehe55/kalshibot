@@ -9,6 +9,28 @@
 
 const BaseSkill = require('../../core/base-skill');
 
+function parseNumeric(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function getOrderFillCount(order) {
+  if (order && order.fill_count_fp != null) return parseNumeric(order.fill_count_fp);
+  if (order && order.fill_count != null) return parseNumeric(order.fill_count);
+  return 0;
+}
+
+function getOrderCostDollars(order) {
+  const makerCost = parseNumeric(order?.maker_fill_cost_dollars);
+  const makerFees = parseNumeric(order?.maker_fees_dollars);
+  const takerCost = parseNumeric(order?.taker_fill_cost_dollars);
+  const takerFees = parseNumeric(order?.taker_fees_dollars);
+  if (makerCost || makerFees || takerCost || takerFees) {
+    return makerCost + makerFees + takerCost + takerFees;
+  }
+  return (parseNumeric(order?.taker_fill_cost) + parseNumeric(order?.taker_fees)) / 100;
+}
+
 class PositionManager extends BaseSkill {
   constructor() {
     super({
@@ -64,26 +86,52 @@ class PositionManager extends BaseSkill {
     const kalshiSkill = this.context.registry.get('kalshi-market-data');
 
     try {
-      const sellOrder = await kalshiSkill.getClient().sellPosition(
-        tp.ticker, tp.side, tp.contracts, tp.sellPriceCents
-      );
+      // Validate current filled quantity from live order state before placing sell.
+      const liveOrder = await kalshiSkill.getClient().getOrder(tp.orderId);
+      const filled = getOrderFillCount(liveOrder);
+      if (filled <= 0) {
+        return { ticker: tp.ticker, status: 'blocked', reason: 'no_filled_contracts' };
+      }
 
-      if (sellOrder.status === 'executed' || sellOrder.fill_count > 0) {
+      // Use fresh market bid at execution time to avoid stale take-profit triggers.
+      const liveMarket = await kalshiSkill.getClient().fetchMarket(tp.ticker);
+      const liveBid = tp.side === 'yes' ? liveMarket?.yesBid : liveMarket?.noBid;
+      if (!liveBid || liveBid <= 0) {
+        return { ticker: tp.ticker, status: 'blocked', reason: 'no_live_bid' };
+      }
+
+      const contractsToSell = Math.min(tp.contracts || filled, filled);
+      if (contractsToSell <= 0) {
+        return { ticker: tp.ticker, status: 'blocked', reason: 'zero_sell_size' };
+      }
+
+      const sellPriceCents = Math.round(liveBid * 100);
+      const sellOrder = await kalshiSkill.getClient().sellPosition(
+        tp.ticker, tp.side, contractsToSell, sellPriceCents
+      );
+      const fillCount = getOrderFillCount(sellOrder);
+
+      if (sellOrder.status === 'executed' || fillCount > 0) {
         const position = state.openPositions.find(p => p.orderId === tp.orderId);
-        const pnl = ((tp.sellPriceDecimal - (position?.priceDecimal || 0)) || 0) *
-          (sellOrder.fill_count || tp.contracts);
+        const exitPriceDecimal = sellPriceCents / 100;
+        const pnl = ((exitPriceDecimal - (position?.priceDecimal || 0)) || 0) *
+          (fillCount || contractsToSell);
 
         state.closePosition(tp.orderId, {
           won: pnl > 0, pnl,
-          payout: tp.sellPriceDecimal * (sellOrder.fill_count || tp.contracts),
+          payout: exitPriceDecimal * (fillCount || contractsToSell),
           cost: position?.totalCost || 0,
           exitType: 'TAKE_PROFIT',
         });
 
         state.logTrade({
           type: 'TRADE', action: 'SELL', side: tp.side,
-          ticker: tp.ticker, contracts: tp.contracts,
-          price: tp.sellPriceCents, pnl, reason: tp.reason,
+          ticker: tp.ticker, contracts: contractsToSell,
+          price: sellPriceCents,
+          entryPriceCents: position?.priceCents ?? Math.round((position?.priceDecimal || 0) * 100),
+          exitPriceCents: sellPriceCents,
+          pnl,
+          reason: `${tp.reason} | liveBid=${sellPriceCents}c`,
         });
 
         return { ticker: tp.ticker, status: 'sold', pnl };
@@ -111,7 +159,7 @@ class PositionManager extends BaseSkill {
     }
 
     const order = await kalshiSkill.getClient().getOrder(orderId);
-    const filled = order.fill_count || 0;
+    const filled = getOrderFillCount(order);
 
     if (filled === 0) {
       state.openPositions = state.openPositions.filter(p => p.orderId !== orderId);
@@ -128,13 +176,13 @@ class PositionManager extends BaseSkill {
     }
 
     const won = position.side === market.result;
-    const costCents = (order.taker_fill_cost || 0) + (order.taker_fees || 0);
-    const costDollars = costCents / 100;
+    const costDollars = getOrderCostDollars(order);
     const payout = won ? filled * 1.00 : 0;
     const pnl = payout - costDollars;
+    const costCents = Math.round(costDollars * 100);
 
     // Update DB
-    analyticsSkill.updateOrderDirect(orderId, 'settled', filled, order.taker_fill_cost || 0, order.taker_fees || 0);
+    analyticsSkill.updateOrderDirect(orderId, 'settled', filled, costCents, 0);
     analyticsSkill.logMarketSnapshotDirect(market, state.btcPrice.binance, 'settlement');
 
     state.closePosition(orderId, {
@@ -145,7 +193,13 @@ class PositionManager extends BaseSkill {
     state.logTrade({
       type: 'SETTLEMENT', action: won ? 'WIN' : 'LOSS',
       side: position.side, ticker: position.ticker,
-      contracts: filled, pnl, cost: costDollars, payout, result: market.result,
+      contracts: filled,
+      entryPriceCents: position.priceCents ?? Math.round((position.priceDecimal || 0) * 100),
+      exitPriceCents: won ? 100 : 0,
+      pnl,
+      cost: costDollars,
+      payout,
+      result: market.result,
     });
 
     console.log(

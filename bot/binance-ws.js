@@ -4,7 +4,7 @@ const axios = require('axios');
 class BinanceFeed {
   constructor(state, symbol = 'btcusdt') {
     this.state = state;
-    this.symbol = symbol;
+    this.symbol = String(symbol || 'btcusdt').toLowerCase();
     this.ws = null;
     this.reconnectDelay = 1000;
     this.maxReconnectDelay = 30000;
@@ -15,16 +15,21 @@ class BinanceFeed {
 
     // WebSocket endpoints to try (Binance.US first for US users, then global)
     this.wsEndpoints = [
-      `wss://stream.binance.us:9443/ws/${symbol}@bookTicker`,
-      `wss://stream.binance.com:9443/ws/${symbol}@bookTicker`,
+      `wss://stream.binance.us:9443/ws/${this.symbol}@bookTicker`,
+      `wss://stream.binance.com:9443/ws/${this.symbol}@bookTicker`,
     ];
     this.currentEndpointIdx = 0;
     this.wsFailCount = 0;
 
     // REST fallback endpoints
+    const symbolUpper = this.symbol.toUpperCase();
+    const usCandidates = [
+      symbolUpper.replace('USDT', 'USD'),
+      symbolUpper,
+    ];
     this.restEndpoints = [
-      { url: 'https://api.binance.us/api/v3/ticker/bookTicker', params: { symbol: 'BTCUSD' } },
-      { url: 'https://api.binance.com/api/v3/ticker/bookTicker', params: { symbol: 'BTCUSDT' } },
+      ...usCandidates.map(s => ({ url: 'https://api.binance.us/api/v3/ticker/bookTicker', params: { symbol: s } })),
+      { url: 'https://api.binance.com/api/v3/ticker/bookTicker', params: { symbol: symbolUpper } },
     ];
 
     // Track price history for volatility estimation + trend indicator
@@ -91,7 +96,11 @@ class BinanceFeed {
 
         if (isNaN(bid) || isNaN(ask)) return;
 
-        this.state.updateBinancePrice(bid, ask);
+        if (typeof this.state.updateSpotPrice === 'function') {
+          this.state.updateSpotPrice(this.symbol, bid, ask);
+        } else {
+          this.state.updateBinancePrice(bid, ask);
+        }
         this.recordPrice((bid + ask) / 2);
       } catch (err) {
         // Ignore parse errors on binary frames
@@ -149,7 +158,11 @@ class BinanceFeed {
 
         if (isNaN(bid) || isNaN(ask)) continue;
 
-        this.state.updateBinancePrice(bid, ask);
+        if (typeof this.state.updateSpotPrice === 'function') {
+          this.state.updateSpotPrice(this.symbol, bid, ask);
+        } else {
+          this.state.updateBinancePrice(bid, ask);
+        }
         this.recordPrice((bid + ask) / 2);
         return;
       } catch (err) {

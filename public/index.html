@@ -30,6 +30,9 @@
         <span class="dot-label">RED</span>
       </div>
       <div class="uptime" id="uptime">00:00:00</div>
+      <button class="bot-toggle stopped" id="download-logs" title="Download all logs">
+        <span class="toggle-label">DOWNLOAD LOGS</span>
+      </button>
       <button class="bot-toggle" id="bot-toggle" title="Start/Stop Bot">
         <span class="toggle-icon" id="toggle-icon">&#9654;</span>
         <span class="toggle-label" id="toggle-label">START</span>
@@ -69,7 +72,10 @@
     <section class="panel wide-panel" id="panel-intent">
       <div class="panel-header">
         <span class="panel-title">BOT INTENT</span>
-        <span class="status-badge" id="bot-status">INITIALIZING</span>
+        <div class="intent-badges">
+          <span class="status-badge quote-status-badge quotes_unknown" id="market-quotes-status">QUOTES UNKNOWN</span>
+          <span class="status-badge" id="bot-status">INITIALIZING</span>
+        </div>
       </div>
       <div class="intent-body">
         <div class="intent-message" id="intent-message">Starting up...</div>
@@ -221,6 +227,14 @@
         <div class="stat">
           <span class="stat-label">Strategy</span>
           <span class="stat-value" id="stat-strategy" style="font-size:10px">--</span>
+        </div>
+        <div class="stat">
+          <span class="stat-label">Per Coin</span>
+          <span class="stat-value" id="stat-coin" style="font-size:10px">--</span>
+        </div>
+        <div class="stat">
+          <span class="stat-label">Disabled Buckets</span>
+          <span class="stat-value" id="stat-disabled-buckets" style="font-size:10px">--</span>
         </div>
       </div>
     </section>

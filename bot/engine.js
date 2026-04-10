@@ -558,9 +558,16 @@ class BotEngine {
     if (!this.running || this.state.openPositions.length === 0) return;
 
     try {
-      // Use cached market data from scan() — no redundant API calls
-      const isCacheFresh = (Date.now() - this._marketCache.ts) < this._marketCacheTTL;
-      const refreshed = isCacheFresh ? this._marketCache.data : this.state.activeMarkets;
+      // Build fresh market snapshots for open positions to avoid stale TP decisions.
+      const openTickers = [...new Set(this.state.openPositions.map(p => p.ticker))];
+      const liveResults = await Promise.allSettled(openTickers.map(t => this.kalshi.fetchMarket(t)));
+      const liveMap = new Map();
+      for (let i = 0; i < openTickers.length; i++) {
+        if (liveResults[i].status === 'fulfilled' && liveResults[i].value) {
+          liveMap.set(openTickers[i], liveResults[i].value);
+        }
+      }
+      const refreshed = this.state.activeMarkets.map((m) => liveMap.get(m.ticker) ? { ...m, ...liveMap.get(m.ticker) } : m);
 
       const tpSignals = this.strategy.generateTakeProfitSignals(
         this.state.openPositions,
@@ -602,6 +609,8 @@ class BotEngine {
               ticker: tp.ticker,
               contracts: tp.contracts,
               price: tp.sellPriceCents,
+              entryPriceCents: Math.round(((this.state.openPositions.find(p => p.orderId === tp.orderId)?.priceDecimal) || 0) * 100),
+              exitPriceCents: tp.sellPriceCents,
               pnl,
               reason: tp.reason,
             });
@@ -679,6 +688,8 @@ class BotEngine {
         side: position.side,
         ticker: position.ticker,
         contracts: filled,
+        entryPriceCents: position.priceCents ?? Math.round((position.priceDecimal || 0) * 100),
+        exitPriceCents: won ? 100 : 0,
         pnl,
         cost: costDollars,
         payout,

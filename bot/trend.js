@@ -1,12 +1,12 @@
 /**
- * 1-Hour Trend Indicator
+ * 15-Minute Trend Indicator
  *
- * Dual EMA crossover (12min fast / 45min slow) confirmed by 30-min Rate of Change.
+ * Dual EMA crossover (3min fast / 15min slow) confirmed by 15-min Rate of Change.
  * Provides a BULLISH / BEARISH / NEUTRAL signal used to modulate directional trade edge.
  *
  * - O(1) incremental EMA updates (called every ~1 sec from BinanceFeed.recordPrice)
  * - ROC reads from BinanceFeed.priceHistory (already stored)
- * - Cold start: returns NEUTRAL until 50% of slow EMA period has elapsed (~22 min)
+ * - Cold start: returns NEUTRAL until 50% of slow EMA period has elapsed (~7.5 min)
  */
 
 class TrendIndicator {
@@ -14,9 +14,9 @@ class TrendIndicator {
     this.binanceFeed = binanceFeed;
 
     // Configurable periods (in seconds, since we sample once per second)
-    this.fastPeriodSec = config.TREND_FAST_PERIOD || 720;    // 12 min
-    this.slowPeriodSec = config.TREND_SLOW_PERIOD || 2700;   // 45 min
-    this.rocWindowSec  = config.TREND_ROC_WINDOW  || 1800;   // 30 min
+    this.fastPeriodSec = config.TREND_FAST_PERIOD || 180;    // 3 min
+    this.slowPeriodSec = config.TREND_SLOW_PERIOD || 900;    // 15 min
+    this.rocWindowSec  = config.TREND_ROC_WINDOW  || 900;    // 15 min
     this.rocThreshold  = config.TREND_ROC_THRESHOLD || 0.02; // 0.02%
 
     // EMA smoothing constants

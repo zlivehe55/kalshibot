@@ -2,6 +2,23 @@ const axios = require('axios');
 const crypto = require('crypto');
 const fs = require('fs');
 
+function toDecimalPrice(value) {
+  if (value == null) return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function getPriceFromMarket(market, legacyCentKey, dollarsKey) {
+  // Newer API shape uses *_dollars (0..1), legacy uses integer cents.
+  const dollarsVal = toDecimalPrice(market[dollarsKey]);
+  if (dollarsVal != null) return dollarsVal;
+
+  const centsVal = toDecimalPrice(market[legacyCentKey]);
+  if (centsVal != null) return centsVal / 100;
+
+  return null;
+}
+
 class KalshiClient {
   constructor(config, state) {
     this.config = config;
@@ -100,19 +117,24 @@ class KalshiClient {
     try {
       const resp = await this.get(`/trade-api/v2/markets/${ticker}`);
       const m = resp.data.market;
+      const yesBid = getPriceFromMarket(m, 'yes_bid', 'yes_bid_dollars');
+      const yesAsk = getPriceFromMarket(m, 'yes_ask', 'yes_ask_dollars');
+      const noBid = getPriceFromMarket(m, 'no_bid', 'no_bid_dollars');
+      const noAsk = getPriceFromMarket(m, 'no_ask', 'no_ask_dollars');
+      const lastPrice = getPriceFromMarket(m, 'last_price', 'last_price_dollars');
       return {
         ticker: m.ticker,
         status: m.status,
         result: m.result,
-        yesBid: m.yes_bid / 100,
-        yesAsk: m.yes_ask / 100,
-        noBid: m.no_bid / 100,
-        noAsk: m.no_ask / 100,
-        lastPrice: m.last_price / 100,
-        yesBidCents: m.yes_bid,
-        yesAskCents: m.yes_ask,
-        noBidCents: m.no_bid,
-        noAskCents: m.no_ask,
+        yesBid,
+        yesAsk,
+        noBid,
+        noAsk,
+        lastPrice,
+        yesBidCents: yesBid != null ? Math.round(yesBid * 100) : null,
+        yesAskCents: yesAsk != null ? Math.round(yesAsk * 100) : null,
+        noBidCents: noBid != null ? Math.round(noBid * 100) : null,
+        noAskCents: noAsk != null ? Math.round(noAsk * 100) : null,
         openTime: new Date(m.open_time).getTime(),
         closeTime: new Date(m.close_time).getTime(),
       };

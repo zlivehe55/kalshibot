@@ -142,6 +142,13 @@ class Strategy {
     const signals = [];
     const now = Date.now();
     const btcPrice = this.state.btcPrice.binance;
+    const totalTrades = this.state?.stats?.totalTrades || 0;
+    const streak = this.state?.stats?.streak || 0;
+    const consecutiveWins = streak > 0 ? streak : 0;
+    let adaptiveCap = 1.0 + Math.max(0, consecutiveWins - 1) * 0.25;
+    adaptiveCap = Math.min(adaptiveCap, 2.0);
+    if (totalTrades < 10) adaptiveCap = Math.min(adaptiveCap, 1.5);
+    adaptiveCap = Math.min(adaptiveCap, this.maxPositionSize);
 
     if (!btcPrice) return signals;
 
@@ -208,7 +215,7 @@ class Strategy {
           : 1;
         const positionDollars = Math.min(
           size * this.state.balance.available,
-          this.maxPositionSize,
+          adaptiveCap,
           this.state.balance.available
         );
         const contracts = Math.max(1, Math.floor(positionDollars / market.yesAsk));
@@ -235,7 +242,7 @@ class Strategy {
           : 1;
         const positionDollars = Math.min(
           size * this.state.balance.available,
-          this.maxPositionSize,
+          adaptiveCap,
           this.state.balance.available
         );
         const contracts = Math.max(1, Math.floor(positionDollars / market.noAsk));
@@ -269,7 +276,7 @@ class Strategy {
             : 1;
           const positionDollars = Math.min(
             size * this.state.balance.available,
-            this.maxPositionSize
+            adaptiveCap
           );
           const contracts = Math.max(1, Math.floor(positionDollars / market.yesAsk));
 
@@ -296,7 +303,7 @@ class Strategy {
       const combinedCost = market.yesAsk + market.noAsk;
       if (combinedCost < 0.98) { // Less than 98 cents combined
         const guaranteedProfit = (1 - combinedCost) * 100; // in cents
-        const positionDollars = Math.min(this.maxPositionSize / 2, this.state.balance.available / 2);
+        const positionDollars = Math.min(adaptiveCap / 2, this.state.balance.available / 2);
         const contracts = Math.max(1, Math.floor(positionDollars / Math.max(market.yesAsk, market.noAsk)));
 
         signals.push({
@@ -345,6 +352,9 @@ class Strategy {
     const signals = [];
 
     for (const pos of openPositions) {
+      const filledContracts = Number(pos.filledContracts || 0);
+      if (!Number.isFinite(filledContracts) || filledContracts <= 0) continue;
+
       const market = kalshiMarkets.find(m => m.ticker === pos.ticker);
       if (!market) continue;
 
@@ -380,7 +390,7 @@ class Strategy {
           side: pos.side,
           sellPriceCents: Math.round(currentValue * 100),
           sellPriceDecimal: currentValue,
-          contracts: pos.filledContracts || pos.contracts,
+          contracts: filledContracts,
           profitPct,
           reason: `Take profit: bought@${(entryPrice * 100).toFixed(0)}c sell@${(currentValue * 100).toFixed(0)}c (+${profitPct.toFixed(1)}%)`,
         });

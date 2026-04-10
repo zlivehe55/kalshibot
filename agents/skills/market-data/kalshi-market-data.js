@@ -11,6 +11,22 @@
 const BaseSkill = require('../../core/base-skill');
 const KalshiClient = require('../../../bot/kalshi');
 
+function toDecimalPrice(value) {
+  if (value == null) return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function getPriceFromMarket(market, legacyCentKey, dollarsKey) {
+  const dollarsVal = toDecimalPrice(market[dollarsKey]);
+  if (dollarsVal != null) return dollarsVal;
+
+  const centsVal = toDecimalPrice(market[legacyCentKey]);
+  if (centsVal != null) return centsVal / 100;
+
+  return null;
+}
+
 class KalshiMarketData extends BaseSkill {
   constructor() {
     super({
@@ -26,6 +42,7 @@ class KalshiMarketData extends BaseSkill {
 
     this.client = null;
     this.seriesTicker = null;
+    this.seriesTickers = [];
     this.slotDuration = 900;
     this._marketCache = { data: [], ts: 0 };
     this._marketCacheTTL = 3000;
@@ -36,6 +53,9 @@ class KalshiMarketData extends BaseSkill {
     const stateManager = context.registry.get('state-manager');
     this.client = new KalshiClient(context.config, stateManager.botState);
     this.seriesTicker = context.config.SERIES_TICKER || 'KXBTC15M';
+    this.seriesTickers = Array.isArray(context.config.SERIES_TICKERS) && context.config.SERIES_TICKERS.length > 0
+      ? context.config.SERIES_TICKERS
+      : [this.seriesTicker];
     this.slotDuration = context.config.SLOT_DURATION || 900;
   }
 
@@ -105,7 +125,10 @@ class KalshiMarketData extends BaseSkill {
 
   async _discoverMarkets(state) {
     try {
-      const markets = await this.client.discoverMarkets(this.seriesTicker);
+      const bySeries = await Promise.all(
+        this.seriesTickers.map(series => this.client.discoverMarkets(series).catch(() => []))
+      );
+      const markets = bySeries.flat();
       const now = Date.now();
       const processed = [];
 
@@ -114,9 +137,18 @@ class KalshiMarketData extends BaseSkill {
         if (closeTime <= now) continue;
 
         const ticker = m.ticker;
-        if (!state.marketOpenPrices[ticker] && state.btcPrice.binance) {
-          state.marketOpenPrices[ticker] = state.btcPrice.binance;
+        const spotAtDiscovery = state.getSpotPriceForTicker
+          ? state.getSpotPriceForTicker(ticker)
+          : state.btcPrice.binance;
+        if (!state.marketOpenPrices[ticker] && spotAtDiscovery) {
+          state.marketOpenPrices[ticker] = spotAtDiscovery;
         }
+
+        const yesBid = getPriceFromMarket(m, 'yes_bid', 'yes_bid_dollars');
+        const yesAsk = getPriceFromMarket(m, 'yes_ask', 'yes_ask_dollars');
+        const noBid = getPriceFromMarket(m, 'no_bid', 'no_bid_dollars');
+        const noAsk = getPriceFromMarket(m, 'no_ask', 'no_ask_dollars');
+        const lastPrice = getPriceFromMarket(m, 'last_price', 'last_price_dollars');
 
         processed.push({
           ticker,
@@ -124,15 +156,15 @@ class KalshiMarketData extends BaseSkill {
           title: m.title,
           openTime: new Date(m.open_time).getTime(),
           closeTime,
-          yesBid: m.yes_bid / 100,
-          yesAsk: m.yes_ask / 100,
-          noBid: m.no_bid / 100,
-          noAsk: m.no_ask / 100,
-          yesBidCents: m.yes_bid,
-          yesAskCents: m.yes_ask,
-          noBidCents: m.no_bid,
-          noAskCents: m.no_ask,
-          lastPrice: m.last_price / 100,
+          yesBid,
+          yesAsk,
+          noBid,
+          noAsk,
+          yesBidCents: yesBid != null ? Math.round(yesBid * 100) : null,
+          yesAskCents: yesAsk != null ? Math.round(yesAsk * 100) : null,
+          noBidCents: noBid != null ? Math.round(noBid * 100) : null,
+          noAskCents: noAsk != null ? Math.round(noAsk * 100) : null,
+          lastPrice,
           minutesUntilClose: Math.floor((closeTime - now) / 60000),
           secondsUntilClose: Math.floor((closeTime - now) / 1000),
           status: m.status,
@@ -201,7 +233,10 @@ class KalshiMarketData extends BaseSkill {
       const stalePending = state.pendingOrders.length;
       if (stalePending > 0) state.pendingOrders = [];
 
-      const kalshiPositions = await this.client.fetchPositions(this.seriesTicker);
+      const allPositions = await this.client.fetchPositions('');
+      const kalshiPositions = allPositions.filter(p =>
+        this.seriesTickers.some(series => p.ticker && p.ticker.startsWith(series))
+      );
       const localPositions = state.openPositions;
 
       // Build maps

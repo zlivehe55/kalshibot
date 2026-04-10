@@ -23,16 +23,17 @@ class PolymarketFeed {
     console.log('[PolymarketFeed] Started polling (4s interval)');
   }
 
-  // Get the Polymarket slug for a given Kalshi close time
-  getSlug(closeTimeMs) {
+  // Get the Polymarket slug for a given Kalshi close time and coin.
+  getSlug(closeTimeMs, coin = 'btc') {
     const slotStartSec = Math.floor((closeTimeMs - this.slotDuration * 1000) / 1000);
     const rounded = Math.floor(slotStartSec / this.slotDuration) * this.slotDuration;
     const prefix = this.slotDuration === 300 ? '5m' : '15m';
-    return `btc-updown-${prefix}-${rounded}`;
+    const normalizedCoin = String(coin || 'btc').toLowerCase();
+    return `${normalizedCoin}-updown-${prefix}-${rounded}`;
   }
 
-  async fetchPrice(closeTimeMs) {
-    const slug = this.getSlug(closeTimeMs);
+  async fetchPrice(closeTimeMs, coin = 'btc') {
+    const slug = this.getSlug(closeTimeMs, coin);
 
     // Check cache
     const cached = this.cache[slug];
@@ -130,16 +131,17 @@ class PolymarketFeed {
     const slugsSeen = new Set();
     const uniqueCloseTimes = [];
     for (const market of markets) {
-      const slug = this.getSlug(market.closeTime);
+      const coin = this.state.getCoinFromTicker ? this.state.getCoinFromTicker(market.ticker).toLowerCase() : 'btc';
+      const slug = this.getSlug(market.closeTime, coin);
       if (!slugsSeen.has(slug)) {
         slugsSeen.add(slug);
-        uniqueCloseTimes.push(market.closeTime);
+        uniqueCloseTimes.push({ closeTime: market.closeTime, coin });
       }
     }
 
     // Fetch all in parallel with concurrency limit
     const results = await this._parallelLimit(
-      uniqueCloseTimes.map(ct => () => this.fetchPrice(ct)),
+      uniqueCloseTimes.map(item => () => this.fetchPrice(item.closeTime, item.coin)),
       this._concurrentLimit
     );
 
@@ -167,8 +169,8 @@ class PolymarketFeed {
   }
 
   // Get cached price for a close time (no network call)
-  getCachedPrice(closeTimeMs) {
-    const slug = this.getSlug(closeTimeMs);
+  getCachedPrice(closeTimeMs, coin = 'btc') {
+    const slug = this.getSlug(closeTimeMs, coin);
     return this.cache[slug]?.data || null;
   }
 

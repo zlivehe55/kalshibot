@@ -21,6 +21,16 @@ const path = require('path');
 const { MasterAgent } = require('./agents');
 
 const PORT = process.env.PORT || 3333;
+const parseList = (raw, fallback) => {
+  const parts = String(raw || '')
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean);
+  return parts.length > 0 ? parts : fallback;
+};
+const DEFAULT_SERIES_TICKERS = ['KXBTC15M', 'KXETH15M', 'KXSOL15M', 'KXXRP15M', 'KXDOGE15M'];
+const seriesTickers = parseList(process.env.SERIES_TICKERS, [process.env.SERIES_TICKER || DEFAULT_SERIES_TICKERS[0]]);
+const effectiveSeriesTickers = seriesTickers.length > 0 ? seriesTickers : DEFAULT_SERIES_TICKERS;
 
 // Build config from env
 const config = {
@@ -31,23 +41,25 @@ const config = {
   POLYMARKET_GAMMA_API: 'https://gamma-api.polymarket.com',
   POLYMARKET_CLOB_API: 'https://clob.polymarket.com',
 
-  SERIES_TICKER: process.env.SERIES_TICKER || 'KXBTC15M',
+  SERIES_TICKER: process.env.SERIES_TICKER || effectiveSeriesTickers[0],
+  SERIES_TICKERS: effectiveSeriesTickers,
+  SUPPORTED_SPOT_SYMBOLS: ['btcusdt', 'ethusdt', 'solusdt', 'xrpusdt', 'dogeusdt'],
   SLOT_DURATION: parseInt(process.env.SLOT_DURATION) || 900, // 15 min
 
   // Strategy thresholds
-  MIN_EDGE: parseFloat(process.env.MIN_EDGE) || 10.0,
+  MIN_EDGE: parseFloat(process.env.MIN_EDGE) || 8.0,
   // Backtest-optimized: higher threshold to filter overconfident signals
-  MIN_DIVERGENCE: parseFloat(process.env.MIN_DIVERGENCE) || 15.0,
-  TRADING_WINDOW: parseInt(process.env.TRADING_WINDOW) || 4, // minutes
+  MIN_DIVERGENCE: parseFloat(process.env.MIN_DIVERGENCE) || 12.0,
+  TRADING_WINDOW: parseInt(process.env.TRADING_WINDOW) || 15, // minutes
   // Backtest-optimized: contracts above 65c have terrible payoff ratio
-  MIN_CONTRACT_PRICE: parseInt(process.env.MIN_CONTRACT_PRICE) || 35, // cents
-  MAX_CONTRACT_PRICE: parseInt(process.env.MAX_CONTRACT_PRICE) || 65, // cents
+  MIN_CONTRACT_PRICE: parseInt(process.env.MIN_CONTRACT_PRICE) || 30, // cents
+  MAX_CONTRACT_PRICE: parseInt(process.env.MAX_CONTRACT_PRICE) || 70, // cents
 
-  // 1H Trend indicator
+  // 15m trend indicator defaults (aligned to 15m contracts)
   TREND_ENABLED: process.env.TREND_ENABLED !== 'false',
-  TREND_FAST_PERIOD: parseInt(process.env.TREND_FAST_PERIOD) || 720,     // 12 min
-  TREND_SLOW_PERIOD: parseInt(process.env.TREND_SLOW_PERIOD) || 2700,    // 45 min
-  TREND_ROC_WINDOW: parseInt(process.env.TREND_ROC_WINDOW) || 1800,      // 30 min
+  TREND_FAST_PERIOD: parseInt(process.env.TREND_FAST_PERIOD) || 180,     // 3 min
+  TREND_SLOW_PERIOD: parseInt(process.env.TREND_SLOW_PERIOD) || 900,     // 15 min
+  TREND_ROC_WINDOW: parseInt(process.env.TREND_ROC_WINDOW) || 900,       // 15 min
   TREND_ROC_THRESHOLD: parseFloat(process.env.TREND_ROC_THRESHOLD) || 0.02,
   TREND_BOOST: parseFloat(process.env.TREND_BOOST) || 0.25,
   TREND_PENALTY: parseFloat(process.env.TREND_PENALTY) || 0.40,
@@ -56,9 +68,12 @@ const config = {
   // Backtest-optimized: conservative Kelly to survive binary option variance
   USE_KELLY_SIZING: process.env.USE_KELLY_SIZING !== 'false',
   KELLY_FRACTION: parseFloat(process.env.KELLY_FRACTION) || 0.08,
-  MAX_POSITION_SIZE: parseFloat(process.env.MAX_POSITION_SIZE) || 5,
+  MAX_POSITION_SIZE: Math.min(1.5, parseFloat(process.env.MAX_POSITION_SIZE) || 1.5),
   MAX_POSITIONS_PER_CONTRACT: parseInt(process.env.MAX_POSITIONS_PER_CONTRACT) || 1,
   MAX_TOTAL_OPEN_POSITIONS: parseInt(process.env.MAX_TOTAL_OPEN_POSITIONS) || 10,
+  MAX_ACCOUNT_RISK_PCT: Number.isFinite(parseFloat(process.env.MAX_ACCOUNT_RISK_PCT))
+    ? parseFloat(process.env.MAX_ACCOUNT_RISK_PCT)
+    : 0.35,
 };
 
 // Express + Socket.io
@@ -116,6 +131,19 @@ app.get('/api/state', (req, res) => {
   } else {
     res.json({ error: 'Agent not started' });
   }
+});
+
+// API: download full bot logs/thought process
+app.get('/api/logs/download', (req, res) => {
+  if (!agent || !agent.state) {
+    return res.status(503).json({ error: 'Agent not started' });
+  }
+
+  const payload = agent.state.getLogsExport();
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename=\"kalshibot-logs-${stamp}.json\"`);
+  return res.send(JSON.stringify(payload, null, 2));
 });
 
 // API: force save state to disk
@@ -193,7 +221,7 @@ server.listen(PORT, () => {
   console.log(`\n  KALSHIBOT MISSION CONTROL (Agentic Architecture)`);
   console.log(`  Dashboard:  http://localhost:${PORT}`);
   console.log(`  Skills API: http://localhost:${PORT}/api/skills`);
-  console.log(`  Config: ${config.SERIES_TICKER} | MinEdge=${config.MIN_EDGE}% | MinDiv=${config.MIN_DIVERGENCE}% | MaxPos=$${config.MAX_POSITION_SIZE}\n`);
+  console.log(`  Config: ${config.SERIES_TICKERS.join(',')} | MinEdge=${config.MIN_EDGE}% | MinDiv=${config.MIN_DIVERGENCE}% | MaxPos=$${config.MAX_POSITION_SIZE}\n`);
 
   // Bot does NOT auto-start — user controls via dashboard toggle
   console.log('  Bot is IDLE. Use the dashboard toggle to start trading.\n');

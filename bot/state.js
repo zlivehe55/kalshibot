@@ -8,6 +8,43 @@ const SAVE_DEBOUNCE_MS = 5000;
 const MAX_PNL_HISTORY = 500;
 const MAX_TRADE_LOG = 500;
 const MAX_CLOSED_POSITIONS = 100;
+const MAX_INTENT_LOG = 2000;
+const COIN_PREFIX_TO_SYMBOL = {
+  KXBTC: 'btcusdt',
+  KXETH: 'ethusdt',
+  KXSOL: 'solusdt',
+  KXXRP: 'xrpusdt',
+  KXDOGE: 'dogeusdt',
+};
+
+function normalizeTimestamp(value) {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = Date.parse(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return Date.now();
+}
+
+function getCoinFromTicker(ticker) {
+  if (!ticker || typeof ticker !== 'string') return 'UNKNOWN';
+  const prefix = Object.keys(COIN_PREFIX_TO_SYMBOL).find(p => ticker.startsWith(p));
+  return prefix ? prefix.replace('KX', '') : 'UNKNOWN';
+}
+
+function getSymbolFromTicker(ticker) {
+  if (!ticker || typeof ticker !== 'string') return null;
+  const prefix = Object.keys(COIN_PREFIX_TO_SYMBOL).find(p => ticker.startsWith(p));
+  return prefix ? COIN_PREFIX_TO_SYMBOL[prefix] : null;
+}
+
+function edgeBucket(edge) {
+  const val = Number(edge);
+  if (!Number.isFinite(val)) return 'unknown';
+  if (val < 15) return '0-15';
+  if (val < 30) return '15-30';
+  return '30+';
+}
 
 class BotState extends EventEmitter {
   constructor() {
@@ -30,6 +67,7 @@ class BotState extends EventEmitter {
       redstone: null,
       lastUpdate: null,
     };
+    this.spotPrices = {};
 
     // Market open reference price (for calculating move %)
     this.marketOpenPrices = {};
@@ -65,6 +103,7 @@ class BotState extends EventEmitter {
       currentEdge: null,
       action: null,
     };
+    this.intentLog = [];
 
     // Stats
     this.stats = {
@@ -83,6 +122,9 @@ class BotState extends EventEmitter {
       grossLosses: 0,
       streak: 0,
       strategyStats: {},
+      coinStats: {},
+      signalTypeStats: {},
+      edgeBucketStats: {},
       unrealizedPnL: 0,
     };
 
@@ -123,12 +165,24 @@ class BotState extends EventEmitter {
         if (!this.stats.strategyStats || typeof this.stats.strategyStats !== 'object') {
           this.stats.strategyStats = {};
         }
+        if (!this.stats.coinStats || typeof this.stats.coinStats !== 'object') {
+          this.stats.coinStats = {};
+        }
+        if (!this.stats.signalTypeStats || typeof this.stats.signalTypeStats !== 'object') {
+          this.stats.signalTypeStats = {};
+        }
+        if (!this.stats.edgeBucketStats || typeof this.stats.edgeBucketStats !== 'object') {
+          this.stats.edgeBucketStats = {};
+        }
       }
       if (Array.isArray(saved.closedPositions)) {
         this.closedPositions = saved.closedPositions.slice(-MAX_CLOSED_POSITIONS);
       }
       if (Array.isArray(saved.tradeLog)) {
         this.tradeLog = saved.tradeLog.slice(0, MAX_TRADE_LOG);
+      }
+      if (Array.isArray(saved.intentLog)) {
+        this.intentLog = saved.intentLog.slice(0, MAX_INTENT_LOG);
       }
       if (Array.isArray(saved.pnlHistory)) {
         this.pnlHistory = saved.pnlHistory.slice(-MAX_PNL_HISTORY);
@@ -166,9 +220,8 @@ class BotState extends EventEmitter {
         pendingOrders: this.pendingOrders,
         openPositions: this.openPositions,
         closedPositions: this.closedPositions.slice(-MAX_CLOSED_POSITIONS),
-        tradeLog: this.tradeLog
-          .filter(t => t.type === 'TRADE' || t.type === 'SETTLEMENT')
-          .slice(0, MAX_TRADE_LOG),
+        tradeLog: this.tradeLog.slice(0, MAX_TRADE_LOG),
+        intentLog: this.intentLog.slice(0, MAX_INTENT_LOG),
         pnlHistory: this.pnlHistory.slice(-MAX_PNL_HISTORY),
       };
 
@@ -190,92 +243,52 @@ class BotState extends EventEmitter {
 
   // ===== Price Updates =====
 
-  updateBinancePrice(bid, ask) {
+  updateSpotPrice(symbol, bid, ask) {
+    const key = String(symbol || '').toLowerCase();
     const mid = (bid + ask) / 2;
-    this.btcPrice.binance = mid;
-    this.btcPrice.binanceBid = bid;
-    this.btcPrice.binanceAsk = ask;
-    this.btcPrice.lastUpdate = Date.now();
+    this.spotPrices[key] = {
+      bid,
+      ask,
+      mid,
+      lastUpdate: Date.now(),
+    };
+    if (key === 'btcusdt') {
+      this.btcPrice.binance = mid;
+      this.btcPrice.binanceBid = bid;
+      this.btcPrice.binanceAsk = ask;
+      this.btcPrice.lastUpdate = Date.now();
+    }
     this.connections.binance = true;
-    this.emit('price:binance', { bid, ask, mid });
+    this.emit('price:binance', { symbol: key, bid, ask, mid });
   }
 
-  updateRedstonePrice(price, timestamp) {
-    this.btcPrice.redstone = price;
-    this.connections.redstone = true;
-    this.emit('price:redstone', { price, timestamp });
+  updateBinancePrice(bid, ask) {
+    this.updateSpotPrice('btcusdt', bid, ask);
   }
 
-  // ===== Connection & Market Updates =====
-
-  updateConnection(name, connected) {
-    if (this.connections[name] === connected) return; // No change, skip emit
-    this.connections[name] = connected;
-    this.emit(`connection:${name}`, connected);
+  getSpotPriceForTicker(ticker) {
+    const symbol = getSymbolFromTicker(ticker);
+    if (!symbol) return this.btcPrice.binance;
+    return this.spotPrices[symbol]?.mid || null;
   }
 
-  updateKalshiConnection(connected) {
-    this.updateConnection('kalshi', connected);
+  getSpotFeedSymbolForTicker(ticker) {
+    return getSymbolFromTicker(ticker) || 'btcusdt';
   }
 
-  updateBalance(balance) {
-    this.balance = balance;
-    // Set starting balance once (first balance fetch after startup)
-    if (this.startingBalance === 0 && balance.total > 0) {
-      this.startingBalance = balance.total;
-    }
-    this.emit('balance', balance);
+  getSupportedCoinSymbols() {
+    return Object.values(COIN_PREFIX_TO_SYMBOL);
   }
 
-  updateMarkets(markets) {
-    this.activeMarkets = markets;
-    this.emit('markets', markets);
+  getCoinFromTicker(ticker) {
+    return getCoinFromTicker(ticker);
   }
 
-  updateIntent(intent) {
-    this.intent = { ...this.intent, ...intent };
-    this.emit('intent', this.intent);
-  }
-
-  updateModel(model) {
-    this.model = { ...this.model, ...model };
-    this.emit('model', this.model);
-  }
-
-  // ===== Trade & Position Tracking =====
-
-  logTrade(trade) {
-    this.tradeLog.unshift({
-      ...trade,
-      timestamp: Date.now(),
-    });
-    if (this.tradeLog.length > MAX_TRADE_LOG) this.tradeLog.pop();
-    this.emit('trade', trade);
-
-    // Persist on meaningful trades only
-    if (trade.type === 'TRADE' || trade.type === 'SETTLEMENT') {
-      this._scheduleSave();
-    }
-  }
-
-  addPendingOrder(order) {
-    this.pendingOrders.push(order);
-    this.emit('order:pending', order);
-    this._scheduleSave();
-  }
-
-  removePendingOrder(orderId) {
-    const idx = this.pendingOrders.findIndex(o => o.orderId === orderId);
-    if (idx === -1) return;
-    const removed = this.pendingOrders.splice(idx, 1)[0];
-    this.emit('order:removed', removed);
-    this._scheduleSave();
-  }
-
-  addPosition(position) {
-    this.openPositions.push(position);
-    this.emit('position:open', position);
-    this._scheduleSave(); // Persist immediately so positions survive restarts
+  _updateWinLossStatsBucket(statObj, won) {
+    statObj.total = (statObj.total || 0) + 1;
+    if (won) statObj.wins = (statObj.wins || 0) + 1;
+    else statObj.losses = (statObj.losses || 0) + 1;
+    statObj.winRate = statObj.total > 0 ? statObj.wins / statObj.total : 0;
   }
 
   closePosition(orderId, result) {
@@ -318,6 +331,39 @@ class BotState extends EventEmitter {
     if (closed.won) this.stats.strategyStats[stratKey].wins++;
     else this.stats.strategyStats[stratKey].losses++;
 
+    // Per-coin performance for selective disable decisions.
+    const coin = getCoinFromTicker(closed.ticker);
+    if (!this.stats.coinStats[coin]) {
+      this.stats.coinStats[coin] = { wins: 0, losses: 0, total: 0, winRate: 0 };
+    }
+    this._updateWinLossStatsBucket(this.stats.coinStats[coin], closed.won);
+
+    // Per-signal-type and per-edge-bucket tracking with auto-disable.
+    const signalType = closed.type || 'UNKNOWN';
+    if (!this.stats.signalTypeStats[signalType]) {
+      this.stats.signalTypeStats[signalType] = { wins: 0, losses: 0, total: 0, winRate: 0 };
+    }
+    this._updateWinLossStatsBucket(this.stats.signalTypeStats[signalType], closed.won);
+
+    const bucket = edgeBucket(closed.edge);
+    const bucketKey = `${signalType}|${bucket}`;
+    if (!this.stats.edgeBucketStats[bucketKey]) {
+      this.stats.edgeBucketStats[bucketKey] = {
+        signalType,
+        bucket,
+        wins: 0,
+        losses: 0,
+        total: 0,
+        winRate: 0,
+        disabled: false,
+      };
+    }
+    const bucketStats = this.stats.edgeBucketStats[bucketKey];
+    this._updateWinLossStatsBucket(bucketStats, closed.won);
+    if (bucketStats.total >= 20 && bucketStats.winRate < 0.5) {
+      bucketStats.disabled = true;
+    }
+
     // Update P&L history
     this.pnlHistory.push({
       timestamp: Date.now(),
@@ -341,6 +387,91 @@ class BotState extends EventEmitter {
     this._scheduleSave();
   }
 
+  updateRedstonePrice(price, timestamp) {
+    this.btcPrice.redstone = price;
+    this.connections.redstone = true;
+    this.emit('price:redstone', { price, timestamp });
+  }
+
+  // ===== Connection & Market Updates =====
+
+  updateConnection(name, connected) {
+    if (this.connections[name] === connected) return; // No change, skip emit
+    this.connections[name] = connected;
+    this.emit(`connection:${name}`, connected);
+  }
+
+  updateKalshiConnection(connected) {
+    this.updateConnection('kalshi', connected);
+  }
+
+  updateBalance(balance) {
+    this.balance = balance;
+    // Set starting balance once (first balance fetch after startup)
+    if (this.startingBalance === 0 && balance.total > 0) {
+      this.startingBalance = balance.total;
+    }
+    this.emit('balance', balance);
+  }
+
+  updateMarkets(markets) {
+    this.activeMarkets = markets;
+    this.emit('markets', markets);
+  }
+
+  updateIntent(intent) {
+    this.intent = { ...this.intent, ...intent };
+    this.intentLog.unshift({
+      timestamp: Date.now(),
+      ...this.intent,
+    });
+    if (this.intentLog.length > MAX_INTENT_LOG) this.intentLog.pop();
+    this.emit('intent', this.intent);
+  }
+
+  updateModel(model) {
+    this.model = { ...this.model, ...model };
+    this.emit('model', this.model);
+  }
+
+  // ===== Trade & Position Tracking =====
+
+  logTrade(trade) {
+    const entry = {
+      ...trade,
+      timestamp: normalizeTimestamp(trade.timestamp),
+    };
+    this.tradeLog.unshift(entry);
+    if (this.tradeLog.length > MAX_TRADE_LOG) this.tradeLog.pop();
+    this.emit('trade', entry);
+
+    // Persist on meaningful trades only
+    if (trade.type === 'TRADE' || trade.type === 'SETTLEMENT') {
+      this._scheduleSave();
+    }
+  }
+
+  addPendingOrder(order) {
+    this.pendingOrders.push(order);
+    this.emit('order:pending', order);
+    this._scheduleSave();
+  }
+
+  removePendingOrder(orderId) {
+    const idx = this.pendingOrders.findIndex(o => o.orderId === orderId);
+    if (idx === -1) return;
+    const removed = this.pendingOrders.splice(idx, 1)[0];
+    this.emit('order:removed', removed);
+    this._scheduleSave();
+  }
+
+  addPosition(position) {
+    this.openPositions.push(position);
+    this.emit('position:open', position);
+    this._scheduleSave(); // Persist immediately so positions survive restarts
+  }
+
+
   // ===== Live Stats =====
 
   emitStats() {
@@ -360,17 +491,33 @@ class BotState extends EventEmitter {
     return {
       connections: this.connections,
       btcPrice: this.btcPrice,
+      spotPrices: this.spotPrices,
       balance: this.balance,
       activeMarkets: this.activeMarkets,
       pendingOrders: this.pendingOrders,
       openPositions: this.openPositions,
       closedPositions: this.closedPositions.slice(-50),
       tradeLog: this.tradeLog.slice(0, 50),
+      intentLog: this.intentLog.slice(0, 50),
       pnlHistory: this.pnlHistory,
       intent: this.intent,
       stats: this.stats,
       model: this.model,
       startTime: this.stats.startTime,
+    };
+  }
+
+  getLogsExport() {
+    return {
+      exportedAt: new Date().toISOString(),
+      stats: this.stats,
+      balance: this.balance,
+      openPositions: this.openPositions,
+      pendingOrders: this.pendingOrders,
+      tradeLog: this.tradeLog,
+      intentLog: this.intentLog,
+      pnlHistory: this.pnlHistory,
+      model: this.model,
     };
   }
 }

@@ -173,6 +173,33 @@ function updateIntent(intent) {
   badge.className = 'status-badge ' + (intent.status || '');
 }
 
+function updateQuoteStatus(markets) {
+  const quoteBadge = el('market-quotes-status');
+  if (!quoteBadge) return;
+
+  const list = Array.isArray(markets) ? markets : [];
+  if (list.length === 0) {
+    quoteBadge.textContent = 'NO MARKETS';
+    quoteBadge.className = 'status-badge quote-status-badge quotes_unknown';
+    return;
+  }
+
+  const hasLiveQuotes = list.some(m =>
+    Number.isFinite(m?.yesBid) &&
+    Number.isFinite(m?.yesAsk) &&
+    Number.isFinite(m?.noBid) &&
+    Number.isFinite(m?.noAsk)
+  );
+
+  if (hasLiveQuotes) {
+    quoteBadge.textContent = 'QUOTES LIVE';
+    quoteBadge.className = 'status-badge quote-status-badge quotes_live';
+  } else {
+    quoteBadge.textContent = 'WAITING QUOTES';
+    quoteBadge.className = 'status-badge quote-status-badge waiting_quotes';
+  }
+}
+
 function updateModel(model) {
   if (!model) return;
 
@@ -259,35 +286,48 @@ function updateMarkets(markets) {
 
 function updateTradeLog(log) {
   const logEl = el('trade-log');
-  el('log-count').textContent = log.length;
+  const closedTrades = (log || []).filter(entry =>
+    entry.type === 'SETTLEMENT' || (entry.type === 'TRADE' && entry.action === 'SELL')
+  );
+  el('log-count').textContent = closedTrades.length;
 
-  if (log.length === 0) {
+  if (closedTrades.length === 0) {
     logEl.innerHTML = '<div class="empty-state">No trades yet</div>';
     return;
   }
 
-  // Show only last 30 entries for performance
-  const recent = log.slice(0, 30);
+  // Show only last 20 closed trades for clarity
+  const recent = closedTrades.slice(0, 20);
 
   logEl.innerHTML = recent.map(entry => {
-    const time = new Date(entry.timestamp).toLocaleTimeString('en-US', { hour12: false });
+    const time = formatClockTime(entry.timestamp);
+    const pnlVal = typeof entry.pnl === 'number' ? entry.pnl : null;
     let typeClass = entry.type || 'LOG';
+    let rowClass = '';
     let msg = '';
 
-    if (entry.type === 'TRADE') {
-      typeClass = entry.action || 'BUY';
-      msg = `${entry.side?.toUpperCase() || ''} ${shortTicker(entry.ticker)} x${entry.contracts || 0} @ ${entry.price || 0}¢`;
-      if (entry.pnl != null) msg += ` | P&L: ${entry.pnl >= 0 ? '+' : ''}$${entry.pnl.toFixed(2)}`;
-      if (entry.edge) msg += ` | Edge: ${entry.edge.toFixed(1)}%`;
-    } else if (entry.type === 'SETTLEMENT') {
+    if (pnlVal != null) {
+      typeClass = pnlVal >= 0 ? 'WIN' : 'LOSS';
+      rowClass = pnlVal >= 0 ? 'trade-win' : 'trade-loss';
+    } else if (entry.type === 'TRADE') {
+      typeClass = entry.action || 'TRADE';
+    }
+
+    if (entry.type === 'SETTLEMENT') {
       typeClass = entry.action || 'WIN';
-      msg = `${shortTicker(entry.ticker)} ${entry.side?.toUpperCase()} x${entry.contracts} | P&L: ${entry.pnl >= 0 ? '+' : ''}$${entry.pnl.toFixed(2)}`;
+      const entryPrice = entry.entryPriceCents ?? '--';
+      const exitPrice = entry.exitPriceCents ?? '--';
+      msg = `${shortTicker(entry.ticker)} ${entry.side?.toUpperCase()} x${entry.contracts} | ${entryPrice}¢ → ${exitPrice}¢ | P&L: ${entry.pnl >= 0 ? '+' : ''}$${entry.pnl.toFixed(2)}`;
+    } else if (entry.type === 'TRADE' && entry.action === 'SELL') {
+      const entryPrice = entry.entryPriceCents ?? '--';
+      const exitPrice = entry.exitPriceCents ?? entry.price ?? '--';
+      msg = `${shortTicker(entry.ticker)} ${entry.side?.toUpperCase()} x${entry.contracts || 0} | ${entryPrice}¢ → ${exitPrice}¢ | P&L: ${entry.pnl >= 0 ? '+' : ''}$${entry.pnl.toFixed(2)}`;
     } else {
       msg = entry.message || '';
     }
 
     return `
-      <div class="log-entry">
+      <div class="log-entry ${rowClass}">
         <span class="log-time">${time}</span>
         <span class="log-type ${typeClass}">${typeClass}</span>
         <span class="log-msg">${msg}</span>
@@ -363,6 +403,25 @@ function updateStats(stats) {
     });
     stratEl.textContent = parts.length > 0 ? parts.join(' | ') : '--';
   }
+
+  // Per-coin win/loss breakdown
+  const coinEl = el('stat-coin');
+  if (coinEl && stats.coinStats) {
+    const parts = Object.entries(stats.coinStats).map(([coin, v]) => {
+      const wr = (v.total || 0) > 0 ? ((v.wins / v.total) * 100).toFixed(0) : '0';
+      return `${coin}: ${v.wins}W/${v.losses}L (${wr}%)`;
+    });
+    coinEl.textContent = parts.length > 0 ? parts.join(' | ') : '--';
+  }
+
+  // Disabled edge buckets
+  const disabledBucketsEl = el('stat-disabled-buckets');
+  if (disabledBucketsEl && stats.edgeBucketStats) {
+    const disabled = Object.values(stats.edgeBucketStats)
+      .filter(v => v && v.disabled)
+      .map(v => `${v.signalType} ${v.bucket}`);
+    disabledBucketsEl.textContent = disabled.length > 0 ? disabled.join(' | ') : 'none';
+  }
 }
 
 function updateChart(pnlHistory) {
@@ -376,7 +435,7 @@ function updateChart(pnlHistory) {
   }
 
   const labels = pnlHistory.map(p =>
-    new Date(p.timestamp).toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' })
+    formatChartTime(p.timestamp)
   );
   const data = pnlHistory.map(p => p.cumulative);
 
@@ -416,6 +475,27 @@ function formatTime(seconds) {
   return m > 0 ? `${m}m ${s}s` : `${s}s`;
 }
 
+function parseTimestamp(ts) {
+  if (typeof ts === 'number' && Number.isFinite(ts)) return ts;
+  if (typeof ts === 'string' && ts.trim()) {
+    const parsed = Date.parse(ts);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return Date.now();
+}
+
+function formatClockTime(ts) {
+  return new Date(parseTimestamp(ts)).toLocaleTimeString('en-US', { hour12: false });
+}
+
+function formatChartTime(ts) {
+  return new Date(parseTimestamp(ts)).toLocaleTimeString('en-US', {
+    hour12: false,
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
 // ========== Uptime Timer ==========
 setInterval(() => {
   if (!startTime) {
@@ -434,6 +514,7 @@ let botRunning = false;
 const toggleBtn = el('bot-toggle');
 const toggleIcon = el('toggle-icon');
 const toggleLabel = el('toggle-label');
+const downloadLogsBtn = el('download-logs');
 
 function updateToggleUI(running) {
   botRunning = running;
@@ -466,6 +547,12 @@ toggleBtn.addEventListener('click', async () => {
     toggleBtn.disabled = false;
   }
 });
+
+if (downloadLogsBtn) {
+  downloadLogsBtn.addEventListener('click', () => {
+    window.location.href = '/api/logs/download';
+  });
+}
 
 // ========== Socket.io Handlers ==========
 socket.on('connect', () => {
@@ -527,13 +614,16 @@ socket.on('snapshot', (data) => {
   updateModel(data.model);
   updatePositions(state.openPositions);
   updateMarkets(state.activeMarkets);
+  updateQuoteStatus(state.activeMarkets);
   updateTradeLog(state.tradeLog);
   updateStats(state.stats);
   updateChart(state.pnlHistory);
 });
 
 socket.on('price:binance', (data) => {
-  state.btcPrice = { ...state.btcPrice, binance: data.mid, binanceBid: data.bid, binanceAsk: data.ask };
+  if (!data.symbol || data.symbol === 'btcusdt') {
+    state.btcPrice = { ...state.btcPrice, binance: data.mid, binanceBid: data.bid, binanceAsk: data.ask };
+  }
   state.connections.binance = true;
   updateBtcPrice(state.btcPrice);
   updateConnections(state.connections);
@@ -553,6 +643,7 @@ socket.on('balance', (data) => {
 socket.on('markets', (data) => {
   state.activeMarkets = data;
   updateMarkets(data);
+  updateQuoteStatus(data);
   // Markets refreshed = Kalshi connection alive
   if (data && data.length > 0) {
     state.connections.kalshi = true;
@@ -617,4 +708,5 @@ socket.on('disconnect', () => {
   console.log('Disconnected from server');
   updateToggleUI(false);
   updateConnections({ binance: false, polymarket: false, kalshi: false, redstone: false });
+  updateQuoteStatus([]);
 });

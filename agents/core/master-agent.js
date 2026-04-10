@@ -49,6 +49,8 @@ class MasterAgent extends EventEmitter {
     this._takeProfitInterval = null;
     this._discoveryInterval = null;
     this._balanceInterval = null;
+    this._lastNoSignalLogAt = 0;
+    this._riskHalted = false;
 
     this._registerSkills();
     this._configureRoutes();
@@ -271,7 +273,8 @@ class MasterAgent extends EventEmitter {
     } else {
       const balance = stateManager.botState.balance;
       this.log(`Kalshi connected. Balance: $${balance.total.toFixed(2)}`);
-      this.log(`Tracking ${stateManager.botState.activeMarkets.length} markets (${this.config.SERIES_TICKER})`);
+      const series = Array.isArray(this.config.SERIES_TICKERS) ? this.config.SERIES_TICKERS.join(',') : this.config.SERIES_TICKER;
+      this.log(`Tracking ${stateManager.botState.activeMarkets.length} markets (${series})`);
     }
 
     // Wait for Binance price feed
@@ -304,11 +307,14 @@ class MasterAgent extends EventEmitter {
   async _waitForPrice() {
     const stateManager = this.registry.get('state-manager');
     return new Promise((resolve) => {
-      if (stateManager.botState.btcPrice.binance) return resolve();
+      if (stateManager.botState.getSpotPriceForTicker && stateManager.botState.getSpotPriceForTicker('KXBTC')) return resolve();
       const check = setInterval(() => {
-        if (stateManager.botState.btcPrice.binance) {
+        const btcSpot = stateManager.botState.getSpotPriceForTicker
+          ? stateManager.botState.getSpotPriceForTicker('KXBTC')
+          : stateManager.botState.btcPrice.binance;
+        if (btcSpot) {
           clearInterval(check);
-          this.log(`BTC price: $${stateManager.botState.btcPrice.binance.toFixed(2)}`);
+          this.log(`BTC price: $${btcSpot.toFixed(2)}`);
           resolve();
         }
       }, 500);
@@ -326,6 +332,7 @@ class MasterAgent extends EventEmitter {
    */
   async _runScan() {
     if (this._scanRunning || !this.running) return;
+    if (this._checkRiskShutdown()) return;
     this._scanRunning = true;
 
     const state = this.state;
@@ -344,12 +351,15 @@ class MasterAgent extends EventEmitter {
         return;
       }
 
+      if (this._checkRiskShutdown()) return;
+
       // Extract results from workflow context to update UI intent
       const ctx = result.context || {};
       const signals = ctx.signals || [];
       const approvedSignals = ctx.approvedSignals || [];
       const executedSignals = ctx.executedSignals || [];
       const totalExecuted = ctx.totalExecuted || 0;
+      const signalStats = ctx.signalStats || null;
 
       if (signals.length > 0) {
         const best = signals[0];
@@ -383,6 +393,23 @@ class MasterAgent extends EventEmitter {
           currentEdge: null,
           action: null,
         });
+
+        // Emit periodic scan diagnostics so users can see why no trades were placed.
+        const now = Date.now();
+        if (signalStats && (now - this._lastNoSignalLogAt >= 15000)) {
+          const bestYes = signalStats.bestEdgeYes != null ? signalStats.bestEdgeYes.toFixed(2) : 'n/a';
+          const bestNo = signalStats.bestEdgeNo != null ? signalStats.bestEdgeNo.toFixed(2) : 'n/a';
+          const bestPoly = signalStats.bestPolyEdgeYes != null ? signalStats.bestPolyEdgeYes.toFixed(2) : 'n/a';
+          this.log(
+            `No signals | markets=${signalStats.totalMarkets} considered=${signalStats.consideredMarkets} ` +
+            `windowSkip=${signalStats.skippedWindow} closingSoon=${signalStats.skippedClosingSoon} ` +
+            `missingOpen=${signalStats.skippedMissingOpenPrice} missingQuotes=${signalStats.skippedMissingQuotes} ` +
+            `priceRangeSkip=${signalStats.skippedPriceRange} bestYes=${bestYes}% bestNo=${bestNo}% bestPoly=${bestPoly}% ` +
+            `cap=$${(signalStats.adaptiveCap || 0).toFixed(2)} ` +
+            `(need >= ${signalStats.minDivergence}% / poly >= ${(signalStats.minEdge * 1.5).toFixed(2)}%)`
+          );
+          this._lastNoSignalLogAt = now;
+        }
       }
     } catch (err) {
       this.log(`Scan error: ${err.message}`, 'ERROR');
@@ -397,6 +424,7 @@ class MasterAgent extends EventEmitter {
    */
   async _runTakeProfit() {
     if (!this.running) return;
+    if (this._riskHalted) return;
     const state = this.state;
     if (!state || state.openPositions.length === 0) return;
 
@@ -446,7 +474,8 @@ class MasterAgent extends EventEmitter {
     try {
       const result = await this.orchestrator.dispatch({ action: 'discover-markets', params: {} });
       if (result.success && result.count > 0) {
-        this.log(`Tracking ${result.count} markets (${this.config.SERIES_TICKER})`);
+        const series = Array.isArray(this.config.SERIES_TICKERS) ? this.config.SERIES_TICKERS.join(',') : this.config.SERIES_TICKER;
+        this.log(`Tracking ${result.count} markets (${series})`);
       }
     } catch (err) {
       this.log(`Discovery error: ${err.message}`, 'ERROR');
@@ -469,6 +498,7 @@ class MasterAgent extends EventEmitter {
 
   stop() {
     this.running = false;
+    this._riskHalted = false;
 
     if (this._scanInterval) clearInterval(this._scanInterval);
     if (this._takeProfitInterval) clearInterval(this._takeProfitInterval);
@@ -508,6 +538,28 @@ class MasterAgent extends EventEmitter {
         message: `[MasterAgent] ${msg}`,
       });
     }
+  }
+
+  _checkRiskShutdown() {
+    const state = this.state;
+    if (!state) return false;
+    const startBalance = state.startingBalance > 0 ? state.startingBalance : state.balance.total;
+    if (!(startBalance > 0)) return false;
+
+    const budgetPct = Number.isFinite(this.config.MAX_ACCOUNT_RISK_PCT) ? this.config.MAX_ACCOUNT_RISK_PCT : 0.35;
+    const riskBudget = startBalance * budgetPct;
+    const realizedLoss = Math.max(0, -(state.stats.totalPnL || 0));
+    if (realizedLoss < riskBudget) return false;
+
+    if (!this._riskHalted) {
+      this._riskHalted = true;
+      this.log(
+        `Risk halt triggered: realized loss $${realizedLoss.toFixed(2)} hit ${Math.round(budgetPct * 100)}% budget ($${riskBudget.toFixed(2)}). Stopping bot.`,
+        'ERROR'
+      );
+      this.stop();
+    }
+    return true;
   }
 }
 
